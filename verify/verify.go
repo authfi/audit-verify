@@ -14,7 +14,8 @@
 // disagrees with any later rewrite, even one made with the signing key.
 //
 // A key's certificate is judged at the head's signed_at, as the bundle states it, because a retired key's
-// certificate expires and what it signed while valid still stands.
+// certificate expires and what it signed while valid still stands. A certificate issued after that time
+// still names the key, so only one that had already expired counts against it.
 //
 // What it cannot say: that an entry was true when it was written, or anything about entries outside the
 // bundle.
@@ -290,7 +291,8 @@ func checkHead(tenant string, h Head, keys map[string]Key) error {
 }
 
 // checkCertified checks that the key's certificate is for this key and chained to root at the given
-// time. A zero time means now.
+// time. A zero time means now. A key's certificates are renewed and only the newest is listed, so a time
+// before this one was issued is judged at its issue.
 func checkCertified(k Key, root *x509.CertPool, at time.Time) error {
 	if len(k.X5C) == 0 {
 		return fmt.Errorf("it carries no certificate, so nothing says who holds it")
@@ -314,6 +316,9 @@ func checkCertified(k Key, root *x509.CertPool, at time.Time) error {
 	pub, err := base64.RawURLEncoding.DecodeString(k.X)
 	if err != nil || !leaf.Equal(ed25519.PublicKey(pub)) {
 		return fmt.Errorf("its certificate is for a different key")
+	}
+	if !at.IsZero() && at.Before(certs[0].NotBefore) {
+		at = certs[0].NotBefore
 	}
 	intermediates := x509.NewCertPool()
 	for _, c := range certs[1:] {
