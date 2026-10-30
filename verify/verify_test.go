@@ -253,6 +253,23 @@ func TestACertificateIsJudgedWhenTheHeadWasSigned(t *testing.T) {
 	wantFailure(t, Verify(b, Options{Root: pool}), "does not chain")
 }
 
+// Certificates are renewed and only the newest is listed, so an old head predates the one it is judged by.
+func TestACertificateIssuedAfterTheHeadStillNamesTheKey(t *testing.T) {
+	rootPub, rootPriv, _ := ed25519.GenerateKey(rand.Reader)
+	root := certFor(t, rootPub, nil, rootPriv, true)
+	pool := x509.NewCertPool()
+	pool.AddCert(root)
+	b, s := signedBundle(t)
+	leaf := certFor(t, s.pub, root, rootPriv, false)
+	b.Keys[0].X5C = []string{base64.StdEncoding.EncodeToString(leaf.Raw)}
+	b.Heads[0].SignedAt = time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+
+	r := Verify(b, Options{Root: pool})
+	if !r.OK || !r.Certified {
+		t.Fatalf("a head older than the certificate: %q", r.Failures)
+	}
+}
+
 // A head saved after the bundle was made, or past a window that was asked to end sooner, is not evidence of
 // anything. A false alarm of tampering would teach people to ignore a true one.
 func TestASavedHeadPastTheBundleFailsOnlyWhenTheBundleShouldReachIt(t *testing.T) {
