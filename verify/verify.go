@@ -104,6 +104,9 @@ type Bundle struct {
 	Entries        []Entry `json:"entries"`
 	Heads          []Head  `json:"heads"`
 	Keys           []Key   `json:"keys"`
+	// Notes are what the maker of the bundle could not include, such as a key set it failed to read. Verify
+	// repeats them in its report so the person checking sees why a key is missing.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Options are what the person checking brings. Both are optional, and each adds a check.
@@ -170,6 +173,9 @@ func HeadMessage(tenant string, seq int64, entryHash string) []byte {
 func Verify(b Bundle, o Options) Report {
 	r := Report{Entries: len(b.Entries)}
 	fail := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
+	for _, n := range b.Notes {
+		r.Notes = append(r.Notes, "the maker of this bundle says: "+n)
+	}
 
 	if b.Format != Format {
 		fail("the bundle's format is %q, this verifier reads %q", b.Format, Format)

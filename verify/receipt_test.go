@@ -436,3 +436,13 @@ func TestAReceiptKeyIsJudgedWhenTheReceiptWasIssued(t *testing.T) {
 	late.certify(t, "root")
 	wantFailure(t, late.verify(), "does not chain")
 }
+
+// What the maker of a bundle could not include reaches the person checking it, so a missing key is explained.
+func TestABundlesNotesReachTheReport(t *testing.T) {
+	w := defaultWorld(t)
+	b := w.bundle()
+	b.Notes = []string{"the receipt keys could not be read"}
+	if r := Verify(b, w.options); !r.OK || !hasNote(r, "the receipt keys could not be read") {
+		t.Fatalf("report = %+v", r)
+	}
+}
