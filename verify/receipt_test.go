@@ -446,3 +446,86 @@ func TestABundlesNotesReachTheReport(t *testing.T) {
 		t.Fatalf("report = %+v", r)
 	}
 }
+
+// withModelCalls puts an allowed and a refused model call, each with its receipts, after the tool calls. A model
+// call's resource is model:<provider>/<model>, which is also the receipt's tool.
+func withModelCalls(w *world) (decAllow, callAllow, decDeny, callDeny int) {
+	const model = "openai/gpt-x"
+	dec := w.receipt(map[string]any{"rid": "rcpt-M", "ph": "decision", "req": "req-M", "verdict": "allow", "agent": "agent:agent-1", "tool": model})
+	out := w.receipt(map[string]any{"rid": "rcpt-M-out", "ph": "outcome", "drid": "rcpt-M", "req": "req-M", "agent": "agent:agent-1", "tool": model, "out": "ok"})
+	den := w.receipt(map[string]any{"rid": "rcpt-N", "ph": "decision", "req": "req-N", "verdict": "deny", "agent": "agent:agent-1", "tool": model})
+	add := []spec{
+		{ActionDecisionReceipt, "agent:agent-1", "model:" + model, map[string]any{"receipt": dec}},
+		{ActionModelCall, "agent:agent-1", "model:" + model, map[string]any{"decision": "allow", "request_id": "req-M", "receipt_id": "rcpt-M", "outcome": "ok", "receipt": out}},
+		{ActionDecisionReceipt, "agent:agent-1", "model:" + model, map[string]any{"receipt": den}},
+		{ActionModelCall, "agent:agent-1", "model:" + model, map[string]any{"decision": "deny", "request_id": "req-N", "receipt_id": "rcpt-N"}},
+	}
+	at := w.cB + 1
+	w.specs = append(w.specs[:at:at], append(add, w.specs[at:]...)...)
+	return at, at + 1, at + 2, at + 3
+}
+
+func TestModelCallsAreHeldToTheSameReceiptChecks(t *testing.T) {
+	w := defaultWorld(t)
+	withModelCalls(w)
+	r := w.verify()
+	if !r.OK || r.Calls != 4 || r.Receipts != 6 {
+		t.Fatalf("an allowed and a refused model call: report = %+v failures %q", r, r.Failures)
+	}
+
+	cases := []struct {
+		name   string
+		break_ func(w *world, dA, cA, dD, cD int)
+		want   string
+	}{
+		{"model call with its decision receipt removed", func(w *world, dA, cA, dD, cD int) { w.remove(dA) }, "receipt missing"},
+		{"refused model call with its receipt removed", func(w *world, dA, cA, dD, cD int) { w.remove(dD) }, "receipt missing"},
+		{"model call with no outcome receipt", func(w *world, dA, cA, dD, cD int) { w.meta(cA, map[string]any{"receipt": nil}) }, "no outcome receipt"},
+		{"model call for another model", func(w *world, dA, cA, dD, cD int) { w.specs[cA].resource = "model:openai/other" }, "is for tool"},
+		{"model call resource that is a tool's", func(w *world, dA, cA, dD, cD int) { w.specs[cA].resource = "mcp_tool:openai/gpt-x" }, "is for tool"},
+		{"a tool call resource that is a model's", func(w *world, dA, cA, dD, cD int) { w.specs[w.cA].resource = "model:send_email" }, "is for tool"},
+		{"the tape says allow, the receipt says deny", func(w *world, dA, cA, dD, cD int) { w.meta(cD, map[string]any{"decision": "allow"}) }, "decision receipt says"},
+		{"the outcome of the allowed model call on the refused one", func(w *world, dA, cA, dD, cD int) {
+			w.meta(cD, map[string]any{"receipt": w.specs[cA].meta["receipt"]})
+		}, "belongs to decision"},
+		{"a receipt on a model call that is a decision's", func(w *world, dA, cA, dD, cD int) {
+			w.meta(cA, map[string]any{"receipt": w.specs[dA].meta["receipt"]})
+		}, "only its outcome belongs"},
+		{"a model call after model receipts began with none", func(w *world, dA, cA, dD, cD int) {
+			w.specs = append(w.specs[:cD+1:cD+1], append([]spec{{ActionModelCall, "agent:agent-1", "model:openai/gpt-x",
+				map[string]any{"decision": "deny", "request_id": "req-Z"}}}, w.specs[cD+1:]...)...)
+		}, "after receipts began"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := defaultWorld(t)
+			dA, cA, dD, cD := withModelCalls(w)
+			tc.break_(w, dA, cA, dD, cD)
+			wantFailure(t, w.verify(), tc.want)
+		})
+	}
+}
+
+// Tool calls and model calls began carrying receipts separately: model calls before theirs began are noted, not failed.
+func TestModelCallsThatPredateReceiptsAreNotedWhileToolCallsAreReceipted(t *testing.T) {
+	w := defaultWorld(t)
+	old := spec{ActionModelCall, "agent:agent-1", "model:openai/gpt-x", map[string]any{"decision": "allow", "request_id": "req-old"}}
+	w.specs = append(w.specs[:w.cB+1:w.cB+1], append([]spec{old}, w.specs[w.cB+1:]...)...)
+	r := w.verify()
+	if !r.OK || r.CallsBeforeReceipts != 1 {
+		t.Fatalf("report = %+v failures %q", r, r.Failures)
+	}
+}
+
+// A decision that approval is required has a receipt and no call; an allow later refused leaves an orphan decision.
+func TestADecisionNoCallNamesIsNotAFailure(t *testing.T) {
+	w := defaultWorld(t)
+	for i, verdict := range []string{"approval_required", "allow"} {
+		w.specs = append(w.specs, spec{ActionDecisionReceipt, "agent:agent-1", "mcp_tool:wire_money", map[string]any{
+			"receipt": w.receipt(map[string]any{"rid": "rcpt-orphan-" + string(rune('a'+i)), "ph": "decision", "req": "req-orphan", "verdict": verdict, "agent": "agent-1", "tool": "wire_money"})}})
+	}
+	r := w.verify()
+	if !r.OK || r.Receipts != 5 {
+		t.Fatalf("report = %+v failures %q", r, r.Failures)
+	}
+}

@@ -26,11 +26,14 @@ const (
 	// ReceiptVersion is the only claim set this verifier reads.
 	ReceiptVersion = 1
 
-	// ActionToolCall and ActionDecisionReceipt are the tape actions receipts ride on.
+	// ActionToolCall, ActionModelCall and ActionDecisionReceipt are the tape actions receipts ride on. A tool call's
+	// resource is mcp_tool:<tool> and a model call's is model:<provider>/<model>, which is also the receipt's tool.
 	ActionToolCall        = "mcp.tool.call"
+	ActionModelCall       = "mcp.model.call"
 	ActionDecisionReceipt = "mcp.decision.receipt"
 
-	toolResourcePrefix = "mcp_tool:"
+	toolResourcePrefix  = "mcp_tool:"
+	modelResourcePrefix = "model:"
 
 	phDecision = "decision"
 	phOutcome  = "outcome"
@@ -156,10 +159,14 @@ func sameAgent(actor, agent string) bool {
 
 // sameCall checks that a receipt speaks about the call this entry records.
 func sameCall(c claims, e Entry, m map[string]any) error {
+	prefix := toolResourcePrefix
+	if e.Action == ActionModelCall {
+		prefix = modelResourcePrefix
+	}
 	if req := str(m, "request_id"); req == "" || c.Req != req {
 		return fmt.Errorf("it is for request %q, the call is request %q", c.Req, req)
 	}
-	if tool := strings.TrimPrefix(e.Resource, toolResourcePrefix); tool == e.Resource || c.Tool != tool {
+	if tool := strings.TrimPrefix(e.Resource, prefix); tool == e.Resource || c.Tool != tool {
 		return fmt.Errorf("it is for tool %q, the call is %q", c.Tool, e.Resource)
 	}
 	if !sameAgent(e.Actor, c.Agent) {
@@ -189,7 +196,7 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 	seen := map[string]string{} // rid -> the receipt as it first appeared
 
 	for i, e := range b.Entries {
-		isCall, isDecision := e.Action == ActionToolCall, e.Action == ActionDecisionReceipt
+		isCall, isDecision := e.Action == ActionToolCall || e.Action == ActionModelCall, e.Action == ActionDecisionReceipt
 		if !isCall && !isDecision && !strings.Contains(e.Metadata, `"receipt"`) {
 			continue
 		}
@@ -208,7 +215,7 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 			continue
 		}
 		if !isCall && !isDecision {
-			fail("position %d: a receipt on a %s entry; receipts ride %s and %s entries only", e.Seq, e.Action, ActionDecisionReceipt, ActionToolCall)
+			fail("position %d: a receipt on a %s entry; receipts ride %s, %s and %s entries only", e.Seq, e.Action, ActionDecisionReceipt, ActionToolCall, ActionModelCall)
 			continue
 		}
 		compact, ok := raw.(string)
@@ -252,11 +259,11 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 // bindCalls checks R2 and R3 for every governed call.
 func bindCalls(b Bundle, r *Report, fail func(string, ...any), calls []toolCall, decisions map[string]claims, outcomes map[int]claims) {
 	// A call without a receipt id is from before receipts only while no earlier call in the window has one.
-	began := -1
+	// Tool calls and model calls began carrying receipts separately, so each kind has its own beginning.
+	began := map[string]int{}
 	for _, c := range calls {
-		if c.rid != "" {
-			began = c.i
-			break
+		if _, ok := began[b.Entries[c.i].Action]; !ok && c.rid != "" {
+			began[b.Entries[c.i].Action] = c.i
 		}
 	}
 	atEdge := func(seq int64) bool {
@@ -267,12 +274,13 @@ func bindCalls(b Bundle, r *Report, fail func(string, ...any), calls []toolCall,
 		r.Calls++
 		atCall := func(f string, a ...any) { fail("position %d: %s", e.Seq, fmt.Sprintf(f, a...)) }
 		if c.rid == "" {
-			if began < 0 || c.i < began {
+			start, started := began[e.Action]
+			if !started || c.i < start {
 				r.CallsBeforeReceipts++
 				continue
 			}
 			r.ReceiptsMissing++
-			atCall("a governed call with no receipt, after receipts began at position %d", b.Entries[began].Seq)
+			atCall("a governed call with no receipt, after receipts began for %s at position %d", e.Action, b.Entries[start].Seq)
 			continue
 		}
 		d, ok := decisions[c.rid]

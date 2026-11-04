@@ -80,9 +80,11 @@ signature  Ed25519 over base64url(header) "." base64url(payload)
 request id, `args` and `res` digests of the arguments and the result, `drid` the decision receipt an outcome
 belongs to and `iat` the issue time in unix seconds.
 
-A decision receipt rides an `mcp.decision.receipt` entry. The call's own `mcp.tool.call` entry has `receipt_id`
-(the decision receipt's `rid`) and `request_id` in its metadata, its resource is `mcp_tool:<tool>`, and an
-allowed call also carries its outcome receipt in `receipt`.
+A decision receipt rides an `mcp.decision.receipt` entry. The call's own entry has `receipt_id` (the decision
+receipt's `rid`) and `request_id` in its metadata and, for an allowed call, its outcome receipt in `receipt`. A
+tool call is an `mcp.tool.call` entry with resource `mcp_tool:<tool>`; a model call is an `mcp.model.call` entry
+with resource `model:<provider>/<model>`, which is the receipt's `tool`. Both are checked the same way. A decision
+nobody's call names (approval required, or an allow that was later refused) is a receipt on its own, not a failure.
 
 The checks, with the keys the bundle lists:
 
@@ -99,7 +101,7 @@ The checks, with the keys the bundle lists:
    within 100 positions of the window's edge: the receipt may sit just outside, so it is noted and a wider
    window settles it.
 4. **Uniqueness and place.** A receipt id is never two different receipts, and receipts appear only on
-   `mcp.decision.receipt` and `mcp.tool.call` entries.
+   `mcp.decision.receipt`, `mcp.tool.call` and `mcp.model.call` entries.
 
 **What a pass does not say.** That the gateway decided correctly, or that the policy it named was the right
 one: a receipt is the gateway's signed statement of what it decided, not proof of why. It does not cover calls
