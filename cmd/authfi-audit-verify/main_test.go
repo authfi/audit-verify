@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/authfi/audit-verify/verify"
@@ -71,5 +73,22 @@ func TestRunReportsReceipts(t *testing.T) {
 	missing, err := run(bundleWith(t, []verify.Entry{call(`{"decision":"allow","receipt_id":"r1","request_id":"q"}`)}), "", "")
 	if err != nil || missing.OK || missing.ReceiptsMissing != 1 {
 		t.Fatalf("report = %+v, err = %v", missing, err)
+	}
+}
+
+// The command prints every receipt count the verifier reports, so none is a number only a library user sees.
+func TestTheReceiptCountsArePrinted(t *testing.T) {
+	var out bytes.Buffer
+	printReceipts(&out, verify.Report{Receipts: 3, Calls: 5, ReceiptsMissing: 1, CallsBeforeReceipts: 2, CallsAtEdge: 4,
+		RefusedForWantOfReceipt: 6, DecisionsWithoutCall: 7})
+	for _, want := range []string{"3 verified", "1 missing", "5 governed calls", "2 predate", "4 at the window edge", "6 refused for want of a receipt", "7 allowed decisions with no call record"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the output lacks %q: %s", want, out.String())
+		}
+	}
+	out.Reset()
+	printReceipts(&out, verify.Report{})
+	if out.Len() != 0 {
+		t.Errorf("a tape with no governed call printed %q", out.String())
 	}
 }

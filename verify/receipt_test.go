@@ -35,6 +35,10 @@ type world struct {
 	dA, cA  int // indexes of the allow's decision entry and its call
 	dB, cB  int
 	options Options
+	// raw gives an entry's metadata text as it is, and offset moves an entry's recorded time from the issue time,
+	// both by the entry's index.
+	raw    map[int]string
+	offset map[int]time.Duration
 }
 
 func merge(base map[string]any, over map[string]any) map[string]any {
@@ -82,7 +86,7 @@ func newWorld(t *testing.T, before, after int, from int64) *world {
 
 func newWorldAt(t *testing.T, before, after int, from, iat int64) *world {
 	t.Helper()
-	w := &world{t: t, head: newSigner(t), rk: newSigner(t), from: from, iat: iat}
+	w := &world{t: t, head: newSigner(t), rk: newSigner(t), from: from, iat: iat, raw: map[int]string{}, offset: map[int]time.Duration{}}
 	w.rk.kid = "rk-1"
 	if from > 1 {
 		w.prev = "older"
@@ -134,9 +138,12 @@ func (w *world) bundle() Bundle {
 	entries := make([]Entry, 0, len(w.specs))
 	for i, s := range w.specs {
 		meta, _ := json.Marshal(s.meta)
+		if raw, ok := w.raw[i]; ok {
+			meta = []byte(raw)
+		}
 		seq := w.from + int64(i)
 		e := Entry{Seq: seq, PrevHash: prev, ID: "id-" + strconv.FormatInt(seq, 10), Actor: s.actor, Action: s.action,
-			Resource: s.resource, RecordedAt: "2026-10-30T10:00:00.123456Z", Metadata: string(meta)}
+			Resource: s.resource, RecordedAt: time.Unix(w.iat, 123456000).Add(w.offset[i]).UTC().Format(time.RFC3339Nano), Metadata: string(meta)}
 		e.EntryHash = EntryHash(e.PrevHash, e.ID, e.Actor, e.Action, e.Resource, e.RecordedAt, meta)
 		prev = e.EntryHash
 		entries = append(entries, e)
@@ -267,9 +274,8 @@ func TestABrokenReceiptFails(t *testing.T) {
 			w.specs = append(w.specs, spec{ActionToolCall, "agent:agent-1", "mcp_tool:x", map[string]any{"decision": "deny", "request_id": "req-C"}})
 		}, "after receipts began", 1},
 		{"metadata of a call that is not JSON", func(w *world) {
-			w.specs[w.cA].meta = nil
-			w.specs = append(w.specs, spec{ActionToolCall, "agent:agent-1", "mcp_tool:x", nil})
-		}, "after receipts began", 1},
+			w.raw[w.cB] = "not json"
+		}, "metadata is not JSON", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -528,4 +534,240 @@ func TestADecisionNoCallNamesIsNotAFailure(t *testing.T) {
 	if !r.OK || r.Receipts != 5 {
 		t.Fatalf("report = %+v failures %q", r, r.Failures)
 	}
+}
+
+// The audit service rewrites a published tool call to the past tense before it hashes the entry, so a tape holds
+// mcp.tool.called and never mcp.tool.call. The verifier reads both spellings as the same call.
+func TestAStoredToolCallIsStillAToolCall(t *testing.T) {
+	stored := func(w *world) {
+		w.specs[w.cA].action = ActionToolCalled
+		w.specs[w.cB].action = ActionToolCalled
+	}
+	w := defaultWorld(t)
+	stored(w)
+	if r := w.verify(); !r.OK || r.Calls != 2 || r.Receipts != 3 {
+		t.Fatalf("a receipted tape, stored: report = %+v failures %q", r, r.Failures)
+	}
+
+	// With the receipts gone it must fail, which is what made the old verifier's silence a hole.
+	w = defaultWorld(t)
+	stored(w)
+	w.remove(w.dA)
+	wantFailure(t, w.verify(), "receipt missing")
+
+	w = defaultWorld(t)
+	stored(w)
+	w.specs = append(w.specs, spec{ActionToolCalled, "agent:agent-1", "mcp_tool:x", map[string]any{"decision": "deny", "request_id": "req-C"}})
+	wantFailure(t, w.verify(), "after receipts began")
+
+	w = defaultWorld(t)
+	stored(w)
+	w.meta(w.cB, map[string]any{"decision": "allow"})
+	wantFailure(t, w.verify(), "decision receipt says")
+
+	w = defaultWorld(t)
+	w.specs[w.cA].action = "mcp.tool.invoked"
+	wantFailure(t, w.verify(), "receipts ride")
+}
+
+// A receipt is signed within moments of the entry that carries it. One dated years away was not signed for this
+// position, whatever its certificate says.
+func TestAReceiptDatedFarFromItsTapePositionFails(t *testing.T) {
+	year2001 := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	for _, tc := range []struct {
+		name string
+		skew time.Duration
+		ok   bool
+	}{
+		{"just inside, before", -ReceiptSkew + time.Second, true},
+		{"just inside, after", ReceiptSkew - time.Second, true},
+		{"just outside, before", -ReceiptSkew - time.Second, false},
+		{"just outside, after", ReceiptSkew + time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := defaultWorld(t)
+			w.offset[w.dA] = -tc.skew // the entry is recorded this much after the receipt's issue time
+			r := w.verify()
+			if tc.ok && !r.OK {
+				t.Fatalf("failures: %q", r.Failures)
+			}
+			if !tc.ok {
+				wantFailure(t, r, "dated far from its tape position")
+			}
+		})
+	}
+	w := newWorldAt(t, 120, 120, 1, year2001)
+	for i := range w.specs {
+		w.offset[i] = time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC).Sub(time.Unix(year2001, 0))
+	}
+	wantFailure(t, w.verify(), "dated far from its tape position")
+
+	w = defaultWorld(t)
+	b := w.bundle()
+	b.Entries[w.dA].RecordedAt = "yesterday"
+	wantFailure(t, Verify(b, w.options), "is not a time")
+}
+
+// An allowed decision no call names is counted once it is old enough for its call to have been recorded.
+func TestAllowedDecisionsWithNoCallAreCountedAsANote(t *testing.T) {
+	orphan := func(w *world, verdict, rid string, issued int64) {
+		w.specs = append(w.specs, spec{ActionDecisionReceipt, "agent:agent-1", "mcp_tool:wire_money", map[string]any{
+			"receipt": w.receipt(map[string]any{"rid": rid, "ph": "decision", "req": "req-" + rid, "verdict": verdict, "agent": "agent-1", "tool": "wire_money", "iat": issued})}})
+	}
+	w := defaultWorld(t)
+	orphan(w, "allow", "old-allow", w.iat)
+	orphan(w, "allow", "old-allow-2", w.iat)
+	orphan(w, "approval_required", "old-approval", w.iat)
+	orphan(w, "deny", "old-deny", w.iat)
+	orphan(w, "allow", "recent-allow", w.iat+int64((30*time.Minute-DecisionSettle/2)/time.Second))
+	// The window ends 30 minutes after the first three were issued, and 5 minutes after the last.
+	w.specs = append(w.specs, spec{"user.login", "user:a", "user:a", map[string]any{}})
+	w.offset[len(w.specs)-1] = 30 * time.Minute
+	r := w.verify()
+	if !r.OK || r.DecisionsWithoutCall != 2 || r.ReceiptsMissing != 0 || !hasNote(r, "2 allowed decisions have no call record") {
+		t.Fatalf("report = %+v failures %q notes %q", r, r.Failures, r.Notes)
+	}
+
+	// A decision a call names is not an orphan, and a decision just inside the settling time is not counted yet.
+	w = defaultWorld(t)
+	w.specs = append(w.specs, spec{"user.login", "user:a", "user:a", map[string]any{}})
+	w.offset[len(w.specs)-1] = 30 * time.Minute
+	if r := w.verify(); !r.OK || r.DecisionsWithoutCall != 0 {
+		t.Fatalf("report = %+v", r)
+	}
+}
+
+// A gateway that cannot sign refuses the call and says so on the call's deny entry. That is the control working,
+// not a receipt lost; the same words on an allow are a lie.
+func TestACallRefusedForWantOfAReceiptIsNotedNotFailed(t *testing.T) {
+	refused := func(action string) spec {
+		return spec{action, "agent:agent-1", "mcp_tool:x", map[string]any{"decision": "deny", "request_id": "req-U", "receipt_unavailable": "true"}}
+	}
+	w := defaultWorld(t)
+	w.specs = append(w.specs[:w.cB+1:w.cB+1], append([]spec{refused(ActionToolCalled), refused(ActionModelCall)}, w.specs[w.cB+1:]...)...)
+	r := w.verify()
+	if !r.OK || r.RefusedForWantOfReceipt != 2 || r.ReceiptsMissing != 0 || !hasNote(r, "2 governed calls were refused by the gateway for want of a receipt") {
+		t.Fatalf("report = %+v failures %q", r, r.Failures)
+	}
+
+	w = defaultWorld(t)
+	allow := refused(ActionToolCall)
+	allow.meta["decision"] = "allow"
+	w.specs = append(w.specs[:w.cB+1:w.cB+1], append([]spec{allow}, w.specs[w.cB+1:]...)...)
+	r = w.verify()
+	wantFailure(t, r, "marked as refused for want of a receipt")
+	if r.ReceiptsMissing != 1 || r.RefusedForWantOfReceipt != 0 {
+		t.Errorf("report = %+v", r)
+	}
+
+	// The mark excuses a call that has no receipt id and nothing else: a call that names a receipt is checked.
+	w = defaultWorld(t)
+	w.meta(w.cB, map[string]any{"receipt_unavailable": "true"})
+	w.remove(w.dB)
+	wantFailure(t, w.verify(), "receipt missing")
+
+	// And an unmarked deny with no receipt, after receipts began, is still missing.
+	w = defaultWorld(t)
+	plain := refused(ActionToolCall)
+	delete(plain.meta, "receipt_unavailable")
+	w.specs = append(w.specs[:w.cB+1:w.cB+1], append([]spec{plain}, w.specs[w.cB+1:]...)...)
+	wantFailure(t, w.verify(), "after receipts began")
+}
+
+// A call with no request id cannot be tied to any receipt, and two empty ids are not a match.
+func TestACallWithNoRequestIdCannotBeBound(t *testing.T) {
+	w := defaultWorld(t)
+	w.meta(w.cA, map[string]any{"request_id": nil})
+	w.meta(w.dA, nil)
+	w.specs[w.dA].meta["receipt"] = w.receipt(map[string]any{"rid": "rcpt-A", "ph": "decision", "req": "", "verdict": "allow", "agent": "agent-1", "tool": "send_email"})
+	wantFailure(t, w.verify(), "carries no request id")
+
+	// Without a receipt id the cutover rule is unchanged: before receipts began it is only counted.
+	w = defaultWorld(t)
+	old := spec{ActionToolCall, "agent:agent-1", "mcp_tool:legacy", map[string]any{"decision": "allow"}}
+	w.specs = append([]spec{old}, w.specs...)
+	if r := w.verify(); !r.OK || r.CallsBeforeReceipts != 1 {
+		t.Fatalf("report = %+v failures %q", r, r.Failures)
+	}
+}
+
+func TestTheAgentMustBeTheActorExactly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		actor, agent string
+		ok           bool
+	}{
+		"the same principal":               {"agent:agent-1", "agent:agent-1", true},
+		"a bare id of an agent":            {"agent:agent-1", "agent-1", true},
+		"a look-alike with a longer id":    {"agent:xagent-1", "agent-1", false},
+		"a look-alike with a shorter id":   {"agent:agent-1", "gent-1", false},
+		"another kind of principal":        {"user:agent-1", "agent-1", false},
+		"a person for an agent":            {"user:agent-1", "agent:agent-1", false},
+		"no agent in the receipt":          {"agent:agent-1", "", false},
+		"no agent in either":               {"", "", false},
+		"a person principal, exactly":      {"user:alice", "user:alice", true},
+		"a person against a bare agent id": {"user:alice", "alice", false},
+	} {
+		if got := sameAgent(tc.actor, tc.agent); got != tc.ok {
+			t.Errorf("%s: sameAgent(%q, %q) = %v", name, tc.actor, tc.agent, got)
+		}
+	}
+}
+
+func TestACallWhoseDecisionTheTapeDoesNotKnowFails(t *testing.T) {
+	for _, decision := range []string{"", "approval_required", "ALLOW", "allowed"} {
+		w := defaultWorld(t)
+		w.meta(w.cB, map[string]any{"decision": decision})
+		wantFailure(t, w.verify(), "decision receipt says")
+	}
+}
+
+// A key of the wrong length is refused, not handed to ed25519.Verify, which panics on it.
+func TestAReceiptKeyOfTheWrongLengthFails(t *testing.T) {
+	w := defaultWorld(t)
+	w.keys[1].X = base64.RawURLEncoding.EncodeToString(w.rk.pub[:16])
+	wantFailure(t, w.verify(), "no usable public value")
+	w = defaultWorld(t)
+	w.keys[1].Crv = "P-256"
+	wantFailure(t, w.verify(), "not an Ed25519 key")
+}
+
+// The two spellings of a tool call are one kind: receipts that began under one still bind calls under the other.
+func TestBothSpellingsOfAToolCallShareOneBeginning(t *testing.T) {
+	w := defaultWorld(t)
+	w.specs[w.cA].action = ActionToolCalled // cA is receipted under the stored spelling, cB under the published
+	between := spec{ActionToolCall, "agent:agent-1", "mcp_tool:x", map[string]any{"decision": "deny", "request_id": "req-C"}}
+	w.specs = append(w.specs[:w.cB:w.cB], append([]spec{between}, w.specs[w.cB:]...)...)
+	wantFailure(t, w.verify(), "after receipts began")
+
+}
+
+// The bound itself is inside it: a receipt exactly an hour from its entry is accepted, a nanosecond more is not.
+func TestTheSkewBoundIsInclusive(t *testing.T) {
+	const frac = 123456000 * time.Nanosecond // the world records entries at this fraction of the issue second
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+		ok     bool
+	}{
+		{"exactly an hour after", -ReceiptSkew - frac, true},
+		{"a nanosecond past an hour after", -ReceiptSkew - frac - time.Nanosecond, false},
+		{"exactly an hour before", ReceiptSkew - frac, true},
+		{"a nanosecond past an hour before", ReceiptSkew - frac + time.Nanosecond, false},
+	} {
+		w := defaultWorld(t)
+		w.offset[w.dA] = tc.offset
+		r := w.verify()
+		if tc.ok != r.OK {
+			t.Errorf("%s: ok = %v, failures %q", tc.name, r.OK, r.Failures)
+		}
+	}
+}
+
+// A verdict other than allow or deny on a call entry is not one the gateway writes there, whoever agrees with it.
+func TestAToolCallRecordedWithAnotherVerdictFailsEvenIfTheReceiptAgrees(t *testing.T) {
+	w := defaultWorld(t)
+	w.meta(w.dB, map[string]any{"receipt": w.receipt(map[string]any{"rid": "rcpt-B", "ph": "decision", "req": "req-B",
+		"verdict": "approval_required", "agent": "agent-1", "tool": "wire_money"})})
+	w.meta(w.cB, map[string]any{"decision": "approval_required"})
+	wantFailure(t, w.verify(), "decision receipt says")
 }

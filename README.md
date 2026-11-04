@@ -82,7 +82,8 @@ belongs to and `iat` the issue time in unix seconds.
 
 A decision receipt rides an `mcp.decision.receipt` entry. The call's own entry has `receipt_id` (the decision
 receipt's `rid`) and `request_id` in its metadata and, for an allowed call, its outcome receipt in `receipt`. A
-tool call is an `mcp.tool.call` entry with resource `mcp_tool:<tool>`; a model call is an `mcp.model.call` entry
+tool call is an `mcp.tool.call` entry (the audit service stores it as `mcp.tool.called`; both are read) with
+resource `mcp_tool:<tool>`; a model call is an `mcp.model.call` entry
 with resource `model:<provider>/<model>`, which is the receipt's `tool`. Both are checked the same way. A decision
 nobody's call names (approval required, or an allow that was later refused) is a receipt on its own, not a failure.
 
@@ -100,8 +101,14 @@ The checks, with the keys the bundle lists:
    failed. A call with a `receipt_id` whose receipt is not in the bundle fails as `receipt missing`, unless it is
    within 100 positions of the window's edge: the receipt may sit just outside, so it is noted and a wider
    window settles it.
-4. **Uniqueness and place.** A receipt id is never two different receipts, and receipts appear only on
+4. **Time.** A receipt's `iat` must be within an hour of the recorded time of the entry that carries it, in
+   either direction.
+5. **Uniqueness and place.** A receipt id is never two different receipts, and receipts appear only on
    `mcp.decision.receipt`, `mcp.tool.call` and `mcp.model.call` entries.
+
+The report also counts, as notes and never failures: governed calls the gateway refused because it could not sign
+their receipt (the deny entry says `receipt_unavailable`, an allow saying so fails), and allowed decisions older
+than ten minutes before the end of the window that no call entry names, where the call may not have completed.
 
 **What a pass does not say.** That the gateway decided correctly, or that the policy it named was the right
 one: a receipt is the gateway's signed statement of what it decided, not proof of why. It does not cover calls

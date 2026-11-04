@@ -28,12 +28,23 @@ const (
 
 	// ActionToolCall, ActionModelCall and ActionDecisionReceipt are the tape actions receipts ride on. A tool call's
 	// resource is mcp_tool:<tool> and a model call's is model:<provider>/<model>, which is also the receipt's tool.
-	ActionToolCall        = "mcp.tool.call"
+	ActionToolCall = "mcp.tool.call"
+	// ActionToolCalled is how the audit service stores a tool call: it rewrites the published name to the
+	// past tense before it hashes the entry, so the tape never holds ActionToolCall. Both are tool calls.
+	ActionToolCalled      = "mcp.tool.called"
 	ActionModelCall       = "mcp.model.call"
 	ActionDecisionReceipt = "mcp.decision.receipt"
 
 	toolResourcePrefix  = "mcp_tool:"
 	modelResourcePrefix = "model:"
+
+	// ReceiptSkew is how far a receipt's issue time may be from the recorded time of the entry that carries it.
+	// Receipts are recorded within moments of being signed, so a receipt dated years away was not signed for this
+	// position.
+	ReceiptSkew = time.Hour
+	// DecisionSettle is how long an allowed decision may go with no call record before it is counted: the call
+	// may still be running, and its record is written when it ends.
+	DecisionSettle = 10 * time.Minute
 
 	phDecision = "decision"
 	phOutcome  = "outcome"
@@ -148,13 +159,23 @@ func str(m map[string]any, k string) string {
 // sameAgent reports whether the receipt's agent is the entry's actor. The tape types a principal
 // ("agent:abc") where a receipt may carry the bare id, so only what follows the type is compared.
 func sameAgent(actor, agent string) bool {
-	bare := func(s string) string {
-		if i := strings.Index(s, ":"); i >= 0 {
-			return s[i+1:]
-		}
-		return s
+	if agent == "" {
+		return false
 	}
-	return agent != "" && bare(actor) == bare(agent)
+	return actor == agent || (!strings.Contains(agent, ":") && actor == "agent:"+agent)
+}
+
+// isCallAction reports whether a tape action is a governed call, under either spelling of a tool call.
+func isCallAction(action string) bool {
+	return action == ActionToolCall || action == ActionToolCalled || action == ActionModelCall
+}
+
+// callKind names the kind of a governed call, with a tool call's two spellings as one.
+func callKind(action string) string {
+	if action == ActionToolCalled {
+		return ActionToolCall
+	}
+	return action
 }
 
 // sameCall checks that a receipt speaks about the call this entry records.
@@ -163,7 +184,11 @@ func sameCall(c claims, e Entry, m map[string]any) error {
 	if e.Action == ActionModelCall {
 		prefix = modelResourcePrefix
 	}
-	if req := str(m, "request_id"); req == "" || c.Req != req {
+	req := str(m, "request_id")
+	if req == "" {
+		return fmt.Errorf("the call carries no request id, so no receipt can be tied to it")
+	}
+	if c.Req != req {
 		return fmt.Errorf("it is for request %q, the call is request %q", c.Req, req)
 	}
 	if tool := strings.TrimPrefix(e.Resource, prefix); tool == e.Resource || c.Tool != tool {
@@ -182,6 +207,9 @@ type toolCall struct {
 	rid string
 }
 
+// unavailable reports whether the gateway marked this call as refused for want of a receipt it could not sign.
+func (c toolCall) unavailable() bool { return str(c.m, "receipt_unavailable") == "true" }
+
 // checkReceipts runs the receipt checks over the entries of b, adding what it finds to r and the keys it
 // used to used. Bundles with no governed call and no receipt pass through it unchanged.
 //
@@ -196,7 +224,7 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 	seen := map[string]string{} // rid -> the receipt as it first appeared
 
 	for i, e := range b.Entries {
-		isCall, isDecision := e.Action == ActionToolCall || e.Action == ActionModelCall, e.Action == ActionDecisionReceipt
+		isCall, isDecision := isCallAction(e.Action), e.Action == ActionDecisionReceipt
 		if !isCall && !isDecision && !strings.Contains(e.Metadata, `"receipt"`) {
 			continue
 		}
@@ -236,6 +264,15 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 			fail("position %d: a %q receipt on a decision entry", e.Seq, c.PH)
 			continue
 		}
+		at, err := time.Parse(time.RFC3339Nano, e.RecordedAt)
+		if err != nil {
+			fail("position %d: the entry's recorded time %q is not a time, so the receipt cannot be placed", e.Seq, e.RecordedAt)
+			continue
+		}
+		if skew := time.Unix(c.IAT, 0).Sub(at); skew > ReceiptSkew || skew < -ReceiptSkew {
+			fail("position %d: receipt dated far from its tape position: issued %s, recorded %s", e.Seq, time.Unix(c.IAT, 0).UTC().Format(time.RFC3339), e.RecordedAt)
+			continue
+		}
 		first, dup := seen[c.RID]
 		if dup && first != compact {
 			fail("position %d: receipt id %s is two different receipts", e.Seq, c.RID)
@@ -262,8 +299,8 @@ func bindCalls(b Bundle, r *Report, fail func(string, ...any), calls []toolCall,
 	// Tool calls and model calls began carrying receipts separately, so each kind has its own beginning.
 	began := map[string]int{}
 	for _, c := range calls {
-		if _, ok := began[b.Entries[c.i].Action]; !ok && c.rid != "" {
-			began[b.Entries[c.i].Action] = c.i
+		if _, ok := began[callKind(b.Entries[c.i].Action)]; !ok && c.rid != "" {
+			began[callKind(b.Entries[c.i].Action)] = c.i
 		}
 	}
 	atEdge := func(seq int64) bool {
@@ -273,14 +310,23 @@ func bindCalls(b Bundle, r *Report, fail func(string, ...any), calls []toolCall,
 		e := b.Entries[c.i]
 		r.Calls++
 		atCall := func(f string, a ...any) { fail("position %d: %s", e.Seq, fmt.Sprintf(f, a...)) }
+		if c.rid == "" && c.unavailable() {
+			if str(c.m, "decision") != verdictDeny {
+				r.ReceiptsMissing++
+				atCall("an allowed call is marked as refused for want of a receipt")
+				continue
+			}
+			r.RefusedForWantOfReceipt++
+			continue
+		}
 		if c.rid == "" {
-			start, started := began[e.Action]
+			start, started := began[callKind(e.Action)]
 			if !started || c.i < start {
 				r.CallsBeforeReceipts++
 				continue
 			}
 			r.ReceiptsMissing++
-			atCall("a governed call with no receipt, after receipts began for %s at position %d", e.Action, b.Entries[start].Seq)
+			atCall("a governed call with no receipt, after receipts began for %s at position %d", callKind(e.Action), b.Entries[start].Seq)
 			continue
 		}
 		d, ok := decisions[c.rid]
@@ -295,8 +341,15 @@ func bindCalls(b Bundle, r *Report, fail func(string, ...any), calls []toolCall,
 		}
 		bindCall(e, c.m, d, outcomes[c.i], atCall)
 	}
+	countOrphanDecisions(b, r, calls, decisions)
 	if r.CallsBeforeReceipts > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("%d governed calls predate receipts", r.CallsBeforeReceipts))
+	}
+	if r.RefusedForWantOfReceipt > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("%d governed calls were refused by the gateway for want of a receipt it could not sign, so they have none", r.RefusedForWantOfReceipt))
+	}
+	if r.DecisionsWithoutCall > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("%d allowed decisions have no call record: the call may not have completed", r.DecisionsWithoutCall))
 	}
 	if r.CallsAtEdge > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("%d governed calls near the edge of this window have their decision receipt outside it: ask for a wider window to check them", r.CallsAtEdge))
@@ -331,5 +384,28 @@ func bindCall(e Entry, m map[string]any, d, outcome claims, fail func(string, ..
 	}
 	if decision == verdictAllow && outcome.Out != str(m, "outcome") {
 		fail("the tape records the outcome %q and the outcome receipt says %q", str(m, "outcome"), outcome.Out)
+	}
+}
+
+// countOrphanDecisions counts the allowed decisions no call entry names and that are old enough, against the end of
+// the window, for their call to have been recorded. A call refused after its allow is signed leaves such a decision
+// beside the refusal's own, and a call that never finished leaves one with nothing. Either is a note, not a failure:
+// the verifier cannot tell them from a call record that was lost, so it counts them for the person checking.
+func countOrphanDecisions(b Bundle, r *Report, calls []toolCall, decisions map[string]claims) {
+	if len(b.Entries) == 0 {
+		return
+	}
+	end, err := time.Parse(time.RFC3339Nano, b.Entries[len(b.Entries)-1].RecordedAt)
+	if err != nil {
+		return
+	}
+	named := make(map[string]bool, len(calls))
+	for _, c := range calls {
+		named[c.rid] = true
+	}
+	for rid, d := range decisions {
+		if d.Verdict == verdictAllow && !named[rid] && time.Unix(d.IAT, 0).Before(end.Add(-DecisionSettle)) {
+			r.DecisionsWithoutCall++
+		}
 	}
 }

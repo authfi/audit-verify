@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/authfi/audit-verify/verify"
@@ -37,7 +38,7 @@ func main() {
 	if *rootPath != "" {
 		fmt.Printf("key certified:   %t\n", report.Certified)
 	}
-	printReceipts(report)
+	printReceipts(os.Stdout, report)
 	for _, n := range report.Notes {
 		fmt.Println("note:", n)
 	}
@@ -51,12 +52,14 @@ func main() {
 }
 
 // printReceipts says what the receipt checks found. A tape with no governed call prints nothing.
-func printReceipts(report verify.Report) {
+func printReceipts(w io.Writer, report verify.Report) {
 	if report.Calls == 0 && report.Receipts == 0 {
 		return
 	}
-	fmt.Printf("receipts:        %d verified, %d missing (%d governed calls, %d predate receipts, %d at the window edge)\n",
+	fmt.Fprintf(w, "receipts:        %d verified, %d missing (%d governed calls, %d predate receipts, %d at the window edge)\n",
 		report.Receipts, report.ReceiptsMissing, report.Calls, report.CallsBeforeReceipts, report.CallsAtEdge)
+	fmt.Fprintf(w, "                 %d refused for want of a receipt, %d allowed decisions with no call record\n",
+		report.RefusedForWantOfReceipt, report.DecisionsWithoutCall)
 }
 
 // savedHead reads one line of saved heads: a line exported from a log stream, or a head on its own. Other

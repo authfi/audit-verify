@@ -142,6 +142,12 @@ type Report struct {
 	ReceiptsMissing int
 	// CallsBeforeReceipts is how many carry no receipt because they were made before receipts began.
 	CallsBeforeReceipts int
+	// DecisionsWithoutCall is how many allowed decisions, older than DecisionSettle before the end of the window, no
+	// call entry names. It is a note: the call may not have completed.
+	DecisionsWithoutCall int
+	// RefusedForWantOfReceipt is how many calls the gateway refused because it could not sign their receipt, and
+	// which therefore have none.
+	RefusedForWantOfReceipt int
 	// CallsAtEdge is how many carry a receipt id whose receipt is not in the window, near its edge, where
 	// the receipt may be recorded just outside it. A wider window settles them.
 	CallsAtEdge int
