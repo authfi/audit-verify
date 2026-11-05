@@ -457,6 +457,11 @@ func (c *configRun) report(label string, problems []string) {
 // tenantRules checks a tenant act against the one before it. Turning the second-approver setting off, or adding a
 // CI key while it is on, loosens, and needs two people.
 func (c *configRun) tenantRules(a, prev *act) []string {
+	// The setting is read at a time (tenantAt), so the acts must be in time order, as the gateway's loader requires: an act
+	// proposed before the one it follows would put a later act under a setting the gateway never held.
+	if prev != nil && a.proposedAt < prev.proposedAt {
+		return []string{"it was proposed before the act it follows"}
+	}
 	if prev == nil || !prev.needSecond {
 		return nil
 	}
