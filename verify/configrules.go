@@ -604,9 +604,10 @@ func (c *configRun) agentStates() {
 	}
 }
 
-// agentRules checks an agent's state against the one before it. The tier falling (watch, tools, strict, in that
-// order) or the floor falling loosens, and needs two people. With no state before, the tier in force is tools
-// when the agent has a version, so a first state of watch loosens.
+// agentRules checks an agent's state against the one before it. The floor never falls. The tier falling (watch, tools, strict,
+// in that order) loosens, and needs two people while the tenant's second-approver setting stood on when the act was proposed
+// (with it off one person's passkey may loosen). With no state before, the tier in force is tools when the agent has a
+// version, so a first state of watch loosens.
 func (c *configRun) agentRules(a, prev *act) []string {
 	baseline, baseFloor := 0, int64(0)
 	switch {
@@ -615,15 +616,11 @@ func (c *configRun) agentRules(a, prev *act) []string {
 	case len(c.versions[a.agent]) > 0:
 		baseline = modeRank(modeTools)
 	}
-	var why string
-	switch {
-	case modeRank(a.mode) < baseline:
-		why = "lowers the tier"
-	case a.floor < baseFloor:
-		why = fmt.Sprintf("lowers the floor from %d to %d", baseFloor, a.floor)
+	if a.floor < baseFloor {
+		return []string{fmt.Sprintf("it lowers the floor from %d to %d; a floor only goes up", baseFloor, a.floor)}
 	}
-	if why != "" && a.persons() < 2 {
-		return []string{fmt.Sprintf("it %s and carries %d person's approval; two people must approve", why, a.persons())}
+	if t := c.tenantAt(a.proposedAt); modeRank(a.mode) < baseline && t != nil && t.needSecond && a.persons() < 2 {
+		return []string{fmt.Sprintf("it lowers the tier and carries %d person's approval; two people must approve while the second-approver setting is on", a.persons())}
 	}
 	return nil
 }

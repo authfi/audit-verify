@@ -496,17 +496,24 @@ func TestTheSecondApproverRuleForVersions(t *testing.T) {
 func TestTheLooseningRulesForStates(t *testing.T) {
 	runRefusals(t, []refusal{
 		{"the tier falls with one approval", func(t *testing.T, w *tw) {
+			w.secondOn()
 			w.addState(w.stateClaims(agentA, 2, "tools", 0), actOpts{}, w.alice.signer())
 		}, "lowers the tier and carries 1 person's approval"},
 		{"the tier falls to watch with one approval", func(t *testing.T, w *tw) {
+			w.secondOn()
 			w.addState(w.stateClaims(agentA, 2, "watch", 0), actOpts{}, w.alice.signer())
 		}, "lowers the tier"},
 		{"the floor falls with one approval", func(t *testing.T, w *tw) {
 			w.addState(w.stateClaims(agentA, 2, "strict", 2), actOpts{}, w.alice.signer())
 			w.addState(w.stateClaims(agentA, 3, "strict", 1), actOpts{}, w.alice.signer())
-		}, "lowers the floor from 2 to 1"},
+		}, "a floor only goes up"},
+		{"the floor falls even with two approvals", func(t *testing.T, w *tw) {
+			w.addState(w.stateClaims(agentA, 2, "strict", 2), actOpts{}, w.alice.signer())
+			w.addState(w.stateClaims(agentA, 3, "strict", 1), actOpts{}, w.alice.signer(), w.bob.signer())
+		}, "a floor only goes up"},
 		{"a first state of watch is set for an agent with a version", func(t *testing.T, w *tw) {
 			w.addVersion(w.versionClaims(agentB, 1, 0), actOpts{}, w.alice.signer())
+			w.secondOn()
 			w.addState(w.stateClaims(agentB, 1, "watch", 0), actOpts{}, w.alice.signer())
 		}, "lowers the tier"},
 		{"the second-approver setting is turned off with one approval", func(t *testing.T, w *tw) {
@@ -837,4 +844,11 @@ func TestAnOriginMustBeAnHTTPSOrigin(t *testing.T) {
 	if checkOrigin("https://authfi.io", "") == nil {
 		t.Error("an empty rp id was accepted")
 	}
+}
+
+func TestWithTheSettingOffOnePersonMayLoosenTheTier(t *testing.T) {
+	w := newTW(t)
+	w.healthy()
+	w.addState(w.stateClaims(agentA, 2, "watch", 0), actOpts{}, w.alice.signer())
+	mustPass(t, w.verify())
 }
