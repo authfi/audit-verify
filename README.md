@@ -152,13 +152,14 @@ What it checks, with the pinned root as the only trust:
    token is the `ver` or `seq` the bundle files it under, so an old state cannot stand in a newer one's place.
 3. **The approvals.** The digest is `sha256(prefix || body)`, where the body is the payload without `approvals`,
    `approved_by`, `second_approver` and `approved_at`, decoded with numbers kept as written and encoded by Go's
-   `encoding/json` with HTML escaping off, and the prefix is `authfi-agent-config-approval-v1:version\n` or
+   `encoding/json` (Go 1.22 or later string escaping: `\b` and `\f` as such, U+2028 and U+2029 as `\u2028` and
+   `\u2029`, invalid UTF-8 as U+FFFD) with HTML escaping off, and the prefix is `authfi-agent-config-approval-v1:version\n` or
    `authfi-agent-config-approval-v1:state\n`. It is recomputed from the claims. Every approval is then checked over
    it:
    - a **passkey** approval is a WebAuthn `get` assertion whose challenge is the base64url digest, from an `https`
-     origin under the relying party, with user presence and user verification set and the relying party hash
+     origin the approval states, with user presence and user verification set and the relying party hash
      right; its signature over `authenticatorData || sha256(clientDataJSON)` is verified for ES256, RS256 and
-     EdDSA;
+     EdDSA. The origin is checked against the project's allowed origins when the approval is made, not here;
    - a **CI** approval is a signature over `authfi-agent-config-ci-approval-v1\n || digest` by a CI key that the
      tenant's newest signed settings, as of when the version was proposed, list.
 4. **Who approved.** One or two approvals by different people, with different credentials; `approved_by` and

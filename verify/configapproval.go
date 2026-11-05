@@ -218,7 +218,7 @@ func checkPasskey(a approval, d [32]byte) error {
 	if cross, present := cd["crossOrigin"]; present && cross != false {
 		return fmt.Errorf("the assertion was made cross-origin")
 	}
-	if err := originUnder(a.Origin, a.RP); err != nil {
+	if err := checkOrigin(a.Origin, a.RP); err != nil {
 		return err
 	}
 	ad, err := base64.RawURLEncoding.DecodeString(a.AD)
@@ -243,19 +243,17 @@ func checkPasskey(a approval, d [32]byte) error {
 	return verifyWith(a.key, a.Alg, msg, sig)
 }
 
-// originUnder checks that origin is an https origin whose host is the relying party id or a subdomain of it.
-func originUnder(origin, rp string) error {
+// checkOrigin checks that origin is an https origin and the relying party id is named. The origin is not tied to the
+// relying party here: the console may run on a related origin, and the origin was checked against the project's
+// allowed origins when the approval was made. The authenticator data still has to be for this relying party.
+func checkOrigin(origin, rp string) error {
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
 		u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return fmt.Errorf("the origin %q is not an https origin", origin)
 	}
-	if rp == "" || rp != strings.ToLower(rp) {
-		return fmt.Errorf("the relying party id %q is not a lowercase host name", rp)
-	}
-	host := u.Hostname()
-	if host != rp && !strings.HasSuffix(host, "."+rp) {
-		return fmt.Errorf("the origin %q is not under the relying party %q", origin, rp)
+	if rp == "" {
+		return fmt.Errorf("the approval names no relying party")
 	}
 	return nil
 }

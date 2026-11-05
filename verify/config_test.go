@@ -109,6 +109,19 @@ func TestACertificateIsJudgedWhenTheActWasCountersigned(t *testing.T) {
 }
 
 // The digest is the contract's, byte for byte: a vector computed apart from this code.
+// The canonical body uses Go 1.22's string escaping, which is why the module needs Go 1.22.
+func TestTheCanonicalBodyEscapesAsGo122Does(t *testing.T) {
+	const backslash = "\\"
+	claims, err := strictObject([]byte("{\"s\":\"a" + backslash + "b" + backslash + "f" + backslash + "u2028<&>\",\"n\":1.50}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := canonicalBody(claims)
+	if want := "{\"n\":1.50,\"s\":\"a" + backslash + "b" + backslash + "f" + backslash + "u2028<&>\"}"; string(got) != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+}
+
 func TestTheDigestMatchesTheContractsVector(t *testing.T) {
 	const payload = `{"v":2,"kref":{"kind":"tenant","id":"agent_config"},"tid":"11111111-1111-1111-1111-111111111111","agent":"agt_A1","ver":1,` +
 		`"profiles":[{"name":"café <p>&","sys":["d1"],"tools":[{"name":"bash","sha256":"ab","host":true}]}],"floor":0,"review_by":0,` +
@@ -276,12 +289,9 @@ func TestAnApprovalIsRefusedWhen(t *testing.T) {
 			asState := testDigest(ConfigStateType, c)
 			w.addVersion(c, actOpts{}, func(_ [32]byte) map[string]any { return w.alice.approval(asState) })
 		}, "challenge is not this act's digest"},
-		{"its origin is not under the relying party", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin, a.origin = "https://evil.example", "https://evil.example" }))
-		}, "not under the relying party"},
-		{"its origin only ends with the relying party's name", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin, a.origin = "https://xauthfi.io", "https://xauthfi.io" }))
-		}, "not under the relying party"},
+		{"it names no relying party", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.rp = "" }))
+		}, "names no relying party"},
 		{"its origin is not https", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin, a.origin = "http://console.authfi.io", "http://console.authfi.io" }))
 		}, "not an https origin"},
@@ -396,6 +406,16 @@ func TestTheApproversAreRefusedWhen(t *testing.T) {
 			w.addV3(actOpts{mutate: func(c map[string]any) { c["approvals"] = "yes" }}, nil)
 		}, "carries no approvals"},
 	})
+}
+
+// The console may run on a related origin, so an origin outside the relying party's domain is not refused offline.
+func TestARelatedOriginIsNotRefused(t *testing.T) {
+	w := newTW(t)
+	w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
+	w.addVersion(w.versionClaims(agentA, 1, 0), actOpts{}, w.alice.signer(func(a *assertion) {
+		a.cdOrigin, a.origin = "https://console.example.com", "https://console.example.com"
+	}))
+	mustPass(t, w.verify())
 }
 
 func TestTwoPeopleMayApprove(t *testing.T) {
@@ -797,14 +817,11 @@ func TestTokensAreReadWithTheirNumbersAsWritten(t *testing.T) {
 	}
 }
 
-func TestAnOriginIsJudgedByItsHost(t *testing.T) {
+func TestAnOriginMustBeAnHTTPSOrigin(t *testing.T) {
 	for origin, ok := range map[string]bool{
 		"https://authfi.io":              true,
-		"https://console.authfi.io":      true,
 		"https://console.authfi.io:8443": true,
-		"https://a.b.authfi.io":          true,
-		"https://evilauthfi.io":          false,
-		"https://authfi.io.evil.com":     false,
+		"https://console.example.com":    true, // a related origin: not tied to the rp id here
 		"https://user@authfi.io":         false,
 		"https://authfi.io/":             false,
 		"https://authfi.io?x":            false,
@@ -813,11 +830,11 @@ func TestAnOriginIsJudgedByItsHost(t *testing.T) {
 		"authfi.io":                      false,
 		"":                               false,
 	} {
-		if err := originUnder(origin, "authfi.io"); (err == nil) != ok {
+		if err := checkOrigin(origin, "authfi.io"); (err == nil) != ok {
 			t.Errorf("%q: err = %v, want ok = %v", origin, err, ok)
 		}
 	}
-	if originUnder("https://authfi.io", "") == nil || originUnder("https://authfi.io", "AuthFI.io") == nil {
-		t.Error("an empty or non-lowercase rp id was accepted")
+	if checkOrigin("https://authfi.io", "") == nil {
+		t.Error("an empty rp id was accepted")
 	}
 }
