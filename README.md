@@ -116,6 +116,64 @@ that never reached the gateway, and a call made before receipts began carries no
 in the report say what was not checked. The `agent` claim is compared with the entry's actor after the principal's type prefix,
 and the other claims (`obo`, `appr`, `class`, `args`, `res`) are signed but not matched to the tape.
 
+## Approved agent configuration
+
+An AI agent runs only the configuration a person approved: its prompt and tool set, as a numbered version, and its
+enforcement tier and floor as signed state. Each version and each state is a signed token that carries the
+approvals that authorise it, so you can check what was approved, and by whom, without asking AuthFI.
+
+```sh
+authfi-audit-verify config --bundle config.json --root roots/authfi-root-ca-r1.pem
+```
+
+To also check that no approved version was taken from the end of the record, add the tenant's audit proof:
+
+```sh
+authfi-audit-verify config --bundle config.json --root roots/authfi-root-ca-r1.pem --tape proof.json
+```
+
+The bundle holds every version and state of the tenant:
+
+```json
+{"tenant": "<tenant id>",
+ "versions": [{"agent": "agt_...", "ver": 3, "token": "<compact JWS>"}],
+ "states":   [{"scope": "agent", "agent": "agt_...", "seq": 2, "token": "<compact JWS>"},
+              {"scope": "tenant", "agent": "*", "seq": 1, "token": "<compact JWS>"}]}
+```
+
+The command prints, per agent, its newest signed state, its tier and floor, and the versions in force (a version
+at or above the floor). It exits `0` on PASS, `1` on FAIL with one line per problem, and `2` when it could not run.
+
+What it checks, with the pinned root as the only trust:
+
+1. **The key.** The token's header carries an `x5c` chain that reaches the root as it stood when the token was
+   countersigned (`approved_at`), and the leaf names this tenant and an `agent_config` key with the header's `kid`.
+2. **The signature**, EdDSA over the header and payload, and the claims: tenant, claim version, and that the
+   token is the `ver` or `seq` the bundle files it under, so an old state cannot stand in a newer one's place.
+3. **The approvals.** The digest is `sha256(prefix || body)`, where the body is the payload without `approvals`,
+   `approved_by`, `second_approver` and `approved_at`, decoded with numbers kept as written and encoded by Go's
+   `encoding/json` with HTML escaping off, and the prefix is `authfi-agent-config-approval-v1:version\n` or
+   `authfi-agent-config-approval-v1:state\n`. It is recomputed from the claims. Every approval is then checked over
+   it:
+   - a **passkey** approval is a WebAuthn `get` assertion whose challenge is the base64url digest, from an `https`
+     origin under the relying party, with user presence and user verification set and the relying party hash
+     right; its signature over `authenticatorData || sha256(clientDataJSON)` is verified for ES256, RS256 and
+     EdDSA;
+   - a **CI** approval is a signature over `authfi-agent-config-ci-approval-v1\n || digest` by a CI key that the
+     tenant's newest signed settings, as of when the version was proposed, list.
+4. **Who approved.** One or two approvals by different people, with different credentials; `approved_by` and
+   `second_approver` are the approvers named by them.
+5. **Who may loosen.** A state that lowers an agent's tier, lowers its floor, turns the second-approver setting
+   off, or adds a CI key while that setting is on needs two people. When the tenant requires a second approver, so
+   does an agent's first version and any version that adds a host tool. The numbering of each agent's states runs
+   from 1 without a gap.
+6. **The tape**, with `--tape`: the newest `mcp.agent_config.approved` event for each agent matches the bundle's
+   newest version. A tape that is ahead of the bundle fails, and is reported as a possible rollback.
+
+A pass says every token in the bundle was countersigned by the tenant's key under the root and carries the
+approvals the rules need. Passing the tape says the bundle's newest version for each agent is the newest the tape
+records.
+
 ## The root certificate
 
 `roots/authfi-root-ca-r1.pem` is AuthFI Root CA R1. Its SHA-256 fingerprint is:
@@ -128,6 +186,7 @@ D9:C2:A9:C7:0A:A8:53:AC:01:D3:B2:E3:D4:50:51:28:AB:28:E2:78:18:27:79:5D:25:C9:0A
 
 ```go
 report := verify.Verify(bundle, verify.Options{Root: pool, Saved: heads})
+config := verify.VerifyConfig(configBundle, verify.ConfigOptions{Root: pool, Tape: &bundle})
 ```
 
 Import `github.com/authfi/audit-verify/verify`. See the package documentation for the bundle's fields.
