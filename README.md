@@ -181,7 +181,10 @@ Each GitHub Release lists SHA-256 checksums for its archives and signs that file
 made by this repository's release workflow. Every archive also has a build provenance attestation.
 
 ```sh
-cosign verify-blob --bundle authfi-audit-verify_<version>_SHA256SUMS.sigstore.json   --certificate-identity-regexp '^https://github.com/authfi/audit-verify/.github/workflows/release.yml@refs/tags/v'   --certificate-oidc-issuer https://token.actions.githubusercontent.com   authfi-audit-verify_<version>_SHA256SUMS
+cosign verify-blob --bundle authfi-audit-verify_<version>_SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/authfi/audit-verify/.github/workflows/release.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  authfi-audit-verify_<version>_SHA256SUMS
 sha256sum --check --ignore-missing authfi-audit-verify_<version>_SHA256SUMS
 gh attestation verify <archive> --repo authfi/audit-verify
 ```
