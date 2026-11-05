@@ -3,7 +3,9 @@
 //
 //	authfi-audit-verify --bundle proof.json [--root authfi-root.pem] [--heads saved-heads.ndjson]
 //
-// It exits 0 when the bundle passes, 1 when it fails, and 2 when it could not run.
+// It checks the chain, the signed heads and, when the tape carries them, the gateway's decision receipts and
+// that every governed call has one. It exits 0 when the bundle passes, 1 when anything fails (a receipt that
+// does not verify, is missing or does not belong to its call included), and 2 when it could not run.
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/authfi/audit-verify/verify"
@@ -35,6 +38,7 @@ func main() {
 	if *rootPath != "" {
 		fmt.Printf("key certified:   %t\n", report.Certified)
 	}
+	printReceipts(os.Stdout, report)
 	for _, n := range report.Notes {
 		fmt.Println("note:", n)
 	}
@@ -45,6 +49,17 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("result: PASS")
+}
+
+// printReceipts says what the receipt checks found. A tape with no governed call prints nothing.
+func printReceipts(w io.Writer, report verify.Report) {
+	if report.Calls == 0 && report.Receipts == 0 {
+		return
+	}
+	fmt.Fprintf(w, "receipts:        %d verified, %d missing (%d governed calls, %d predate receipts, %d at the window edge)\n",
+		report.Receipts, report.ReceiptsMissing, report.Calls, report.CallsBeforeReceipts, report.CallsAtEdge)
+	fmt.Fprintf(w, "                 %d refused for want of a receipt, %d allowed decisions with no call record\n",
+		report.RefusedForWantOfReceipt, report.DecisionsWithoutCall)
 }
 
 // savedHead reads one line of saved heads: a line exported from a log stream, or a head on its own. Other

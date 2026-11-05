@@ -5,8 +5,10 @@
 //
 //	entry_hash  = hex(sha256(prev_hash US id US actor US action US resource US recorded_at US metadata))
 //	head signed = "authfi.audit.chain-head.v1" LF tenant LF seq LF entry_hash, with Ed25519
+//	receipt     = JWS compact, typ "authfi-receipt+jwt", Ed25519 over base64url(header) "." base64url(payload)
 //
-// US is the byte 0x1F, LF is 0x0A. recorded_at and metadata are the exact strings in the bundle.
+// US is the byte 0x1F, LF is 0x0A. recorded_at and metadata are the exact strings in the bundle. The
+// receipt checks are in receipt.go.
 //
 // What a passing result means: the entries in the bundle link to each other, each says what was hashed,
 // and a key signed the position it claims. Pin the AuthFI root to know whose key that was. Keep the heads
@@ -64,8 +66,16 @@ type Head struct {
 	SignedAt  string `json:"signed_at,omitempty"`
 }
 
-// Key is a public key that may have signed a head, as a JWK. X5C is the custody certificate and its
-// issuers, standard base64 DER, leaf first; empty when the key is not certified.
+// What a key may sign. A head verifies only under an audit_head key and a receipt only under a receipt key,
+// so the keeper of the tape and the gateway cannot forge each other's statements.
+const (
+	UseAuditHead = "audit_head"
+	UseReceipt   = "receipt"
+)
+
+// Key is a public key that may have signed a head or a receipt, as a JWK. X5C is the custody certificate and
+// its issuers, standard base64 DER, leaf first; empty when the key is not certified. Use says what the key
+// may sign; a bundle made before receipts existed leaves it empty, which means audit_head.
 type Key struct {
 	Kty    string   `json:"kty"`
 	Crv    string   `json:"crv"`
@@ -73,6 +83,15 @@ type Key struct {
 	X      string   `json:"x"`
 	X5C    []string `json:"x5c,omitempty"`
 	Status string   `json:"status,omitempty"`
+	Use    string   `json:"use,omitempty"`
+}
+
+// use is what the key may sign, with the empty value read as audit_head.
+func (k Key) use() string {
+	if k.Use == "" {
+		return UseAuditHead
+	}
+	return k.Use
 }
 
 // Bundle is a window of a tenant's tape with what vouches for it.
@@ -85,6 +104,9 @@ type Bundle struct {
 	Entries        []Entry `json:"entries"`
 	Heads          []Head  `json:"heads"`
 	Keys           []Key   `json:"keys"`
+	// Notes are what the maker of the bundle could not include, such as a key set it failed to read. Verify
+	// repeats them in its report so the person checking sees why a key is missing.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Options are what the person checking brings. Both are optional, and each adds a check.
@@ -112,8 +134,25 @@ type Report struct {
 	Certified bool
 	// SavedChecked is how many saved heads fell in the window and matched.
 	SavedChecked int
-	Failures     []string
-	Notes        []string
+	// Receipts is how many distinct decision receipts passed every check: signature, key, tenant and place.
+	Receipts int
+	// Calls is how many governed calls (mcp.tool.call entries) are in the window.
+	Calls int
+	// ReceiptsMissing is how many of those calls have no verified decision receipt although they should.
+	ReceiptsMissing int
+	// CallsBeforeReceipts is how many carry no receipt because they were made before receipts began.
+	CallsBeforeReceipts int
+	// DecisionsWithoutCall is how many allowed decisions, older than DecisionSettle before the end of the window, no
+	// call entry names. It is a note: the call may not have completed.
+	DecisionsWithoutCall int
+	// RefusedForWantOfReceipt is how many calls the gateway refused because it could not sign their receipt, and
+	// which therefore have none.
+	RefusedForWantOfReceipt int
+	// CallsAtEdge is how many carry a receipt id whose receipt is not in the window, near its edge, where
+	// the receipt may be recorded just outside it. A wider window settles them.
+	CallsAtEdge int
+	Failures    []string
+	Notes       []string
 }
 
 // EntryHash is the chain's hash of one event, over the hash before it.
@@ -140,6 +179,9 @@ func HeadMessage(tenant string, seq int64, entryHash string) []byte {
 func Verify(b Bundle, o Options) Report {
 	r := Report{Entries: len(b.Entries)}
 	fail := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
+	for _, n := range b.Notes {
+		r.Notes = append(r.Notes, "the maker of this bundle says: "+n)
+	}
 
 	if b.Format != Format {
 		fail("the bundle's format is %q, this verifier reads %q", b.Format, Format)
@@ -169,22 +211,17 @@ func Verify(b Bundle, o Options) Report {
 		r.ToSeq = e.Seq
 	}
 
-	keys := make(map[string]Key, len(b.Keys))
-	for _, k := range b.Keys {
-		keys[k.Kid] = k
-	}
 	// The newest time each key is said to have signed: a certificate is judged at that moment, because a
 	// retired key's certificate expires and its old signatures still stand.
-	usedKeys := map[string]time.Time{}
+	used := usedKeys{}
 	for _, h := range b.Heads {
-		if err := checkHead(b.TenantID, h, keys); err != nil {
+		k, err := checkHead(b.TenantID, h, b.Keys)
+		if err != nil {
 			fail("the head at position %d: %v", h.Seq, err)
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339, h.SignedAt)
-		if at.After(usedKeys[h.KeyID]) || usedKeys[h.KeyID].IsZero() {
-			usedKeys[h.KeyID] = at
-		}
+		used.note(k, at)
 		hash, inWindow := bySeq[h.Seq]
 		if !inWindow {
 			continue
@@ -206,15 +243,17 @@ func Verify(b Bundle, o Options) Report {
 		r.Notes = append(r.Notes, fmt.Sprintf("entries before position %d are not in this bundle", r.FromSeq))
 	}
 
+	checkReceipts(b, &r, fail, used)
+
 	if o.Root != nil {
-		r.Certified = len(usedKeys) > 0
-		for kid, at := range usedKeys {
-			if err := checkCertified(keys[kid], o.Root, at); err != nil {
+		r.Certified = len(used) > 0
+		for _, u := range used {
+			if err := checkCertified(u.key, o.Root, u.at); err != nil {
 				r.Certified = false
-				fail("key %s: %v", kid, err)
+				fail("%s key %s: %v", u.key.use(), u.key.Kid, err)
 			}
 		}
-	} else if len(usedKeys) > 0 {
+	} else if len(used) > 0 {
 		r.Notes = append(r.Notes, "no root was given, so the signatures were checked but not who holds the key")
 	}
 
@@ -261,33 +300,77 @@ func shouldReach(b Bundle, s Head) bool {
 	return !signed.After(made)
 }
 
-// checkHead checks one head's signature under the key it names.
-func checkHead(tenant string, h Head, keys map[string]Key) error {
-	if h.Algorithm != "Ed25519" {
-		return fmt.Errorf("signed with %q; only Ed25519 is accepted", h.Algorithm)
+// usedKey is a key that signed something checked, with the newest time it is said to have signed.
+type usedKey struct {
+	key Key
+	at  time.Time
+}
+
+type usedKeys map[string]usedKey
+
+// note records that k signed something at the given time, keeping the newest.
+func (u usedKeys) note(k Key, at time.Time) {
+	id := k.use() + "/" + k.Kid
+	if prev, ok := u[id]; !ok || at.After(prev.at) || prev.at.IsZero() {
+		u[id] = usedKey{key: k, at: at}
 	}
-	k, ok := keys[h.KeyID]
-	if !ok {
-		return fmt.Errorf("key %s is not in the bundle", h.KeyID)
+}
+
+// keyFor finds the key kid for a signature of the given use. A key of another use is named as such: it
+// signs other statements, and its signature here is the cross-use forgery the separate keys exist to stop.
+func keyFor(keys []Key, kid, use, signs string) (Key, error) {
+	var other string
+	for _, k := range keys {
+		if k.Kid != kid {
+			continue
+		}
+		if k.use() == use {
+			if k.Status == keyRevoked {
+				return Key{}, fmt.Errorf("key %s was revoked, so its signature cannot be relied on", kid)
+			}
+			return k, nil
+		}
+		other = k.use()
 	}
-	if k.Status == keyRevoked {
-		return fmt.Errorf("key %s was revoked, so its signature cannot be relied on", h.KeyID)
+	if other != "" {
+		return Key{}, fmt.Errorf("key %s is a %s key and may not sign %s", kid, other, signs)
 	}
+	return Key{}, fmt.Errorf("key %s is not in the bundle", kid)
+}
+
+// publicKey is the Ed25519 public value of an Ed25519 JWK.
+func publicKey(k Key) (ed25519.PublicKey, error) {
 	if k.Kty != "OKP" || k.Crv != "Ed25519" {
-		return fmt.Errorf("key %s is not an Ed25519 key", h.KeyID)
+		return nil, fmt.Errorf("key %s is not an Ed25519 key", k.Kid)
 	}
 	pub, err := base64.RawURLEncoding.DecodeString(k.X)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("key %s has no usable public value", h.KeyID)
+		return nil, fmt.Errorf("key %s has no usable public value", k.Kid)
+	}
+	return ed25519.PublicKey(pub), nil
+}
+
+// checkHead checks one head's signature under the audit_head key it names.
+func checkHead(tenant string, h Head, keys []Key) (Key, error) {
+	if h.Algorithm != "Ed25519" {
+		return Key{}, fmt.Errorf("signed with %q; only Ed25519 is accepted", h.Algorithm)
+	}
+	k, err := keyFor(keys, h.KeyID, UseAuditHead, "a head")
+	if err != nil {
+		return Key{}, err
+	}
+	pub, err := publicKey(k)
+	if err != nil {
+		return Key{}, err
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(h.Signature)
 	if err != nil {
-		return fmt.Errorf("the signature is not base64url")
+		return Key{}, fmt.Errorf("the signature is not base64url")
 	}
-	if !ed25519.Verify(ed25519.PublicKey(pub), HeadMessage(tenant, h.Seq, h.EntryHash), sig) {
-		return fmt.Errorf("the signature does not verify under key %s", h.KeyID)
+	if !ed25519.Verify(pub, HeadMessage(tenant, h.Seq, h.EntryHash), sig) {
+		return Key{}, fmt.Errorf("the signature does not verify under key %s", h.KeyID)
 	}
-	return nil
+	return k, nil
 }
 
 // checkCertified checks that the key's certificate is for this key and chained to root at the given
