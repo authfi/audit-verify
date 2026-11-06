@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -54,7 +55,7 @@ func mustCert(t *testing.T, tmpl, parent *x509.Certificate, pub, signer any) *x5
 }
 
 // cliWorld writes a root file and a bundle of one tenant act signed by a key chained to that root and approved by a
-// software passkey, and returns their paths. tamper changes the act after it was approved.
+// sudo confirmation, and returns their paths. tamper changes the act after it was approved.
 func cliWorld(t *testing.T, tamper bool) (dir, root, bundle string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -79,8 +80,6 @@ func cliWorld(t *testing.T, tamper bool) (dir, root, bundle string) {
 		t.Fatal(err)
 	}
 
-	pk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	der, _ := x509.MarshalPKIXPublicKey(&pk.PublicKey)
 	claims := map[string]any{"v": 1, "kref": map[string]any{"kind": "tenant", "id": "agent_config"}, "tid": cliTenant, "scope": "tenant",
 		"agent": "*", "seq": 1, "need_second": false, "ci_keys": []any{}, "proposed_at": now.Add(-time.Hour).Unix()}
 	var buf bytes.Buffer
@@ -88,14 +87,11 @@ func cliWorld(t *testing.T, tamper bool) (dir, root, bundle string) {
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(claims)
 	digest := sha256.Sum256(append([]byte("authfi-agent-config-approval-v1:state\n"), bytes.TrimSuffix(buf.Bytes(), []byte("\n"))...))
-	cd, _ := json.Marshal(map[string]any{"type": "webauthn.get", "challenge": b64u(digest[:]), "origin": "https://console.authfi.io"})
-	rp := sha256.Sum256([]byte("authfi.io"))
-	ad := append(append([]byte{}, rp[:]...), 0x05, 0, 0, 0, 1)
-	cdHash := sha256.Sum256(cd)
-	h := sha256.Sum256(append(append([]byte{}, ad...), cdHash[:]...))
-	sig, _ := ecdsa.SignASN1(rand.Reader, pk, h[:])
-	claims["approvals"] = []any{map[string]any{"kind": "passkey", "by": "user:alice", "kid": "cred-1", "alg": "ES256", "pub": b64u(der),
-		"rp": "authfi.io", "origin": "https://console.authfi.io", "ad": b64u(ad), "cd": b64u(cd), "sig": b64u(sig)}}
+	proposed := claims["proposed_at"].(int64)
+	claims["approvals"] = []any{map[string]any{"kind": "sudo", "by": "user:alice", "method": []any{"mfa", "hwk"},
+		"auth_time": proposed - 300, "window_s": 900, "confirmed_at": proposed + 10, "sess": "00112233445566778899aabbccddeeff",
+		"digest":    hex.EncodeToString(digest[:]),
+		"statement": "confirmed by sudo (Confirm it's you) within the project's sudo window; no passkey of the person signed this act"}}
 	claims["approved_by"], claims["second_approver"], claims["approved_at"] = "user:alice", "", now.Add(-30*time.Minute).Unix()
 	if tamper {
 		claims["need_second"] = true
@@ -124,11 +120,11 @@ func TestConfigPassesAGoodBundle(t *testing.T) {
 	}
 }
 
-// The key signed an act that was changed after the person approved it, so the signature holds and the approval does not.
+// The key signed an act that was changed after the person approved it, so the signature holds and the approval's digest does not.
 func TestConfigFailsAnActChangedAfterItWasApproved(t *testing.T) {
 	_, root, bundle := cliWorld(t, true)
 	code, out, _ := runCLI("--bundle", bundle, "--root", root)
-	if code != 1 || !strings.Contains(out, "FAILED: tenant state seq 1: approval 0 by user:alice: the assertion's challenge is not this act's digest") ||
+	if code != 1 || !strings.Contains(out, "FAILED: tenant state seq 1: approval 0 by user:alice: the confirmation names another act") ||
 		strings.Contains(out, "PASS") {
 		t.Fatalf("code = %d\nout = %s", code, out)
 	}

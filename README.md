@@ -156,13 +156,18 @@ What it checks, with the pinned root as the only trust:
    `\u2029`, invalid UTF-8 as U+FFFD) with HTML escaping off, and the prefix is `authfi-agent-config-approval-v1:version\n` or
    `authfi-agent-config-approval-v1:state\n`. It is recomputed from the claims. Every approval is then checked over
    it:
-   - a **passkey** approval is a WebAuthn `get` assertion whose challenge is the base64url digest, from an `https`
-     origin the approval states, with user presence and user verification set and the relying party hash
-     right; its signature over `authenticatorData || sha256(clientDataJSON)` is verified for ES256, RS256 and
-     EdDSA. The origin is checked against the project's allowed origins when the approval is made, not here;
+   - a **sudo** approval is a person's "Confirm it's you" evidence, not a signature: `{kind, by: "user:<id>",
+     method, auth_time, window_s, confirmed_at, sess, digest, statement}`. The verifier checks that `statement` is
+     the fixed sentence, that `method` has 1 to 8 entries and at least one of `mfa`, `hwk`, `email_confirm`,
+     `passkey_basic`, `pwd_confirmed`, `fed_reauth`, or one of `pwd`, `otp`, `mca` within the five minute confirm window (the console's rule for a person who holds no second factor), that `0 < window_s <= 14400`,
+     that `confirmed_at` is not before `auth_time` and not more than `window_s` after it (2 s of skew), that
+     `digest` is the hex of the act's recomputed digest, that `sess` is 32 hex characters, that it carries no
+     `kid`, `alg`, `pub` or `sig`, and that `proposed_at <= confirmed_at <= approved_at` (2 s of skew). A
+     `passkey` approval no longer verifies;
    - a **CI** approval is a signature over `authfi-agent-config-ci-approval-v1\n || digest` by a CI key that the
      tenant's newest signed settings, as of when the version was proposed, list.
-4. **Who approved.** One or two approvals by different people, with different credentials; `approved_by` and
+4. **Who approved.** One or two approvals by different people (names compared without regard to letter case, and
+   different credentials where both carry one); `approved_by` and
    `second_approver` are the approvers named by them.
 5. **Who may loosen.** A state that lowers an agent's tier, lowers its floor, turns the second-approver setting
    off, or adds a CI key while that setting is on needs two people. When the tenant requires a second approver, so
@@ -172,7 +177,8 @@ What it checks, with the pinned root as the only trust:
    newest version. A tape that is ahead of the bundle fails, and is reported as a possible rollback.
 
 A pass says every token in the bundle was countersigned by the tenant's key under the root and carries the
-approvals the rules need. Passing the tape says the bundle's newest version for each agent is the newest the tape
+approvals the rules need. It does not say a person's hardware key signed an act: a sudo approval is AuthFI's countersigned claim
+that the person was inside their sudo window, and by which methods. Passing the tape says the bundle's newest version for each agent is the newest the tape
 records.
 
 ## Verify a release download
