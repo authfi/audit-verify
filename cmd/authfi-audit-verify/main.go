@@ -2,10 +2,13 @@
 // holds no secret and calls nothing.
 //
 //	authfi-audit-verify --bundle proof.json [--root authfi-root.pem] [--heads saved-heads.ndjson]
+//	authfi-audit-verify config --bundle config.json --root authfi-root.pem [--tape proof.json]
 //
 // It checks the chain, the signed heads and, when the tape carries them, the gateway's decision receipts and
 // that every governed call has one. It exits 0 when the bundle passes, 1 when anything fails (a receipt that
 // does not verify, is missing or does not belong to its call included), and 2 when it could not run.
+//
+// The config command checks a tenant's approved agent configuration: see verify.VerifyConfig.
 package main
 
 import (
@@ -22,6 +25,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "config" {
+		os.Exit(runConfigCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	bundlePath := flag.String("bundle", "", "the proof bundle, as downloaded")
 	rootPath := flag.String("root", "", "the AuthFI root certificate (PEM) to pin; optional")
 	headsPath := flag.String("heads", "", "heads you saved from a log stream, one JSON object per line; optional")
