@@ -9,7 +9,8 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
 - Backfilled heads. A head signed after the fact, over a stretch the tape had no signed head for, is marked
   `backfilled` and signed under its own prefix (`authfi.audit.chain-head.backfill.v1`), so the mark cannot be added
   or cleared without breaking the signature. The report counts them (`Backfilled`) and says what they vouch for.
-  Edits to the stretch are found exactly as for any other head.
+  Edits to the stretch are found exactly as for any other head. A verifier older than this version cannot check a
+  backfilled head and reports it as not verifying; it is not a sign of tampering.
 
 ### Changed
 

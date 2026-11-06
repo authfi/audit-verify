@@ -69,8 +69,9 @@ type Head struct {
 	Algorithm string `json:"algorithm"`
 	Signature string `json:"signature"`
 	SignedAt  string `json:"signed_at,omitempty"`
-	// Backfilled marks a head signed after the fact over a stretch that had no signed head. It attests the chain at
-	// Seq as of SignedAt, which is when the signature was made, not when the entry was recorded. The mark is inside
+	// Backfilled marks a head signed after the fact over a stretch that had no signed head. It attests the chain hash at
+	// Seq, signed when SignedAt says, not when the entry was recorded. SignedAt is the signer database's stamp and is not part of the
+	// signature; the mark is inside
 	// the signed bytes (BackfillHeadPrefix), so clearing or setting it fails the signature.
 	Backfilled bool `json:"backfilled,omitempty"`
 }
