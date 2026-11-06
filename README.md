@@ -175,6 +175,20 @@ A pass says every token in the bundle was countersigned by the tenant's key unde
 approvals the rules need. Passing the tape says the bundle's newest version for each agent is the newest the tape
 records.
 
+## Verify a release download
+
+Each GitHub Release lists SHA-256 checksums for its archives and signs that file with a keyless cosign signature
+made by this repository's release workflow. Every archive also has a build provenance attestation.
+
+```sh
+cosign verify-blob --bundle authfi-audit-verify_<version>_SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/authfi/audit-verify/.github/workflows/release.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  authfi-audit-verify_<version>_SHA256SUMS
+sha256sum --check --ignore-missing authfi-audit-verify_<version>_SHA256SUMS
+gh attestation verify <archive> --repo authfi/audit-verify
+```
+
 ## The root certificate
 
 `roots/authfi-root-ca-r1.pem` is AuthFI Root CA R1. Its SHA-256 fingerprint is:

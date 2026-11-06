@@ -1,0 +1,36 @@
+version: 2
+project_name: authfi-audit-verify
+
+builds:
+  - id: authfi-audit-verify
+    main: ./cmd/authfi-audit-verify
+    binary: authfi-audit-verify
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ['-s -w']
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md, CHANGELOG.md, roots/*]
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
+
+# The checksum file is signed keyless: the signature is bound to this workflow's identity, not to a stored key.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: '${artifact}.sigstore.json'
+    args: ['sign-blob', '--yes', '--bundle=${signature}', '${artifact}']
+    output: true
+
+changelog:
+  disable: true
