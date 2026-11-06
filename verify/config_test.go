@@ -278,11 +278,29 @@ func TestEveryMethodMayApprove(t *testing.T) {
 	}
 }
 
+// A password stands for the console's short confirm window (five minutes) and no longer, as the console lets a person with
+// no second factor confirm; the gateway applies that rule and this is the shape of what it records.
+func TestAPasswordMayApproveOnlyInsideTheShortConfirmWindow(t *testing.T) {
+	for _, m := range []string{"pwd", "otp", "mca"} {
+		t.Run(m, func(t *testing.T) {
+			w := newTW(t)
+			w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer(func(s *sudo) { s.method = []string{m}; s.signedInAgo = 120 }))
+			mustPass(t, w.verify())
+		})
+	}
+}
+
 func TestAnApprovalIsRefusedWhen(t *testing.T) {
 	runRefusals(t, []refusal{
-		{"its only method is a bare password", func(t *testing.T, w *tw) {
+		{"its only method is a password and the short confirm window had passed", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = []string{"pwd"} }))
-		}, "a bare password never does"},
+		}, "short confirm window"},
+		{"its only method is a password six minutes old", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = []string{"otp"}; s.signedInAgo = 360 }))
+		}, "short confirm window"},
+		{"its only method is not one that confirms", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = []string{"sms"}; s.signedInAgo = 60 }))
+		}, "include none that may approve"},
 		{"it names no method", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = nil }))
 		}, "it names 0 methods"},

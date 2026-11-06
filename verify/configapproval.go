@@ -30,7 +30,13 @@ const (
 	sudoSkew      = 2     // seconds of clock skew allowed either side
 )
 
-// sudoMethods are the proofs that set auth_time and may back an approval. A bare password is not one.
+// sudoMethods are the proofs that set auth_time and may back an approval for the whole sudo window. passwordMethods (a
+// password, a code, a link) back one only for the short confirm window, as the console lets a person who holds no second
+// factor confirm; the gateway applies the console's own rule, and this is the shape of what it can record.
+var passwordMethods = map[string]bool{"pwd": true, "otp": true, "mca": true}
+
+const confirmWindow = 5 * 60
+
 var sudoMethods = map[string]bool{"mfa": true, "hwk": true, "email_confirm": true, "passkey_basic": true,
 	"pwd_confirmed": true, "fed_reauth": true}
 
@@ -171,10 +177,10 @@ func parseSudo(m map[string]any, a approval) (approval, []string) {
 	if a.Statement != sudoStatement {
 		problems = append(problems, "its statement is not the fixed sudo statement")
 	}
+	strong, weak := false, false
 	if raw, ok := m["method"].([]any); !ok {
 		problems = append(problems, "it names no method")
 	} else {
-		strong := false
 		for _, r := range raw {
 			s, ok := r.(string)
 			if !ok {
@@ -183,12 +189,13 @@ func parseSudo(m map[string]any, a approval) (approval, []string) {
 			}
 			a.Method = append(a.Method, s)
 			strong = strong || sudoMethods[s]
+			weak = weak || passwordMethods[s]
 		}
 		switch {
 		case len(raw) < 1 || len(raw) > 8:
 			problems = append(problems, fmt.Sprintf("it names %d methods; 1 to 8 are allowed", len(raw)))
-		case !strong:
-			problems = append(problems, fmt.Sprintf("its methods %q include none that may approve (a bare password never does)", a.Method))
+		case !strong && !weak:
+			problems = append(problems, fmt.Sprintf("its methods %q include none that may approve", a.Method))
 		}
 	}
 	var ok1, ok2, ok3 bool
@@ -206,6 +213,8 @@ func parseSudo(m map[string]any, a approval) (approval, []string) {
 		problems = append(problems, "it was confirmed before the person authenticated")
 	case a.ConfirmedAt-a.AuthTime > a.WindowS+sudoSkew:
 		problems = append(problems, "the sudo window had expired when it was confirmed (sudo expired)")
+	case !strong && weak && a.ConfirmedAt-a.AuthTime > confirmWindow+sudoSkew:
+		problems = append(problems, "a password stands only for the short confirm window, which had passed")
 	}
 	a.Sess, _ = claimString(m, "sess")
 	if b, err := hex.DecodeString(a.Sess); err != nil || len(b) != 16 {

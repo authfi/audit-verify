@@ -159,7 +159,7 @@ What it checks, with the pinned root as the only trust:
    - a **sudo** approval is a person's "Confirm it's you" evidence, not a signature: `{kind, by: "user:<id>",
      method, auth_time, window_s, confirmed_at, sess, digest, statement}`. The verifier checks that `statement` is
      the fixed sentence, that `method` has 1 to 8 entries and at least one of `mfa`, `hwk`, `email_confirm`,
-     `passkey_basic`, `pwd_confirmed`, `fed_reauth` (a bare password never approves), that `0 < window_s <= 14400`,
+     `passkey_basic`, `pwd_confirmed`, `fed_reauth`, or one of `pwd`, `otp`, `mca` within the five minute confirm window (the console's rule for a person who holds no second factor), that `0 < window_s <= 14400`,
      that `confirmed_at` is not before `auth_time` and not more than `window_s` after it (2 s of skew), that
      `digest` is the hex of the act's recomputed digest, that `sess` is 32 hex characters, that it carries no
      `kid`, `alg`, `pub` or `sig`, and that `proposed_at <= confirmed_at <= approved_at` (2 s of skew). A

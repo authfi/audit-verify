@@ -148,6 +148,7 @@ type sudo struct {
 	by          string
 	method      []string
 	authTime    int64 // 0: ten minutes before the proposal
+	signedInAgo int64 // when set (and authTime is 0), seconds before the proposal
 	windowS     int64
 	confirmedAt int64 // 0: ten seconds after the proposal
 	sess        string
@@ -162,6 +163,9 @@ func (p *person) sudoFor(d [32]byte, claims map[string]any, mods ...func(*sudo))
 		digest: hex.EncodeToString(d[:]), statement: testStatement}
 	for _, m := range mods {
 		m(&s)
+	}
+	if s.authTime == 0 && s.signedInAgo > 0 {
+		s.authTime = proposed - s.signedInAgo
 	}
 	if s.authTime == 0 {
 		s.authTime = proposed - 600
