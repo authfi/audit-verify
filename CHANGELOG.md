@@ -2,6 +2,21 @@
 
 All notable changes to this verifier. It follows [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+### Changed
+
+- `config`: a person's approval of an agent configuration act is now sudo evidence ("Confirm it's you", the
+  project's sudo window) and no longer a passkey assertion over the act's digest. The `passkey` approval kind is
+  removed, with its WebAuthn, relying-party, origin, authenticator-data and signature checks; a `passkey` approval
+  now fails with a clear reason. Two approvers are compared by name without regard to letter case, and by
+  credential only where both carry one.
+- What is no longer proven offline: that a person's hardware key signed the act's digest.
+- What remains: the KMS agent-config key's countersign, chained to the pinned root; the digest recomputed from the
+  act and matched to each approval; who confirmed, with which methods, when, and within which sudo window. CI
+  approvals are unchanged, and so are the second-approver, loosening, numbering and tape rules.
+
+
 ## 1.1.0
 
 ### Added

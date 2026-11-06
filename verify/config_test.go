@@ -75,30 +75,6 @@ func TestAnAgentWithNoStateIsAtToolsByDefault(t *testing.T) {
 	}
 }
 
-func TestEveryPasskeyAlgorithmApproves(t *testing.T) {
-	for _, alg := range []string{"ES256", "RS256", "EdDSA"} {
-		t.Run(alg, func(t *testing.T) {
-			w := newTW(t)
-			w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
-			p := newPasskey(t, "user:dave", alg)
-			w.addVersion(w.versionClaims(agentA, 1, 0), actOpts{}, p.signer())
-			mustPass(t, w.verify())
-		})
-	}
-}
-
-func TestEveryPasskeyAlgorithmRefusesAFlippedSignature(t *testing.T) {
-	for _, alg := range []string{"ES256", "RS256", "EdDSA"} {
-		t.Run(alg, func(t *testing.T) {
-			w := newTW(t)
-			w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
-			p := newPasskey(t, "user:dave", alg)
-			w.addVersion(w.versionClaims(agentA, 1, 0), actOpts{}, p.signer(func(a *assertion) { a.flipSig = true }))
-			wantConfigFailure(t, w.verify(), "approval 0 by user:dave: the signature does not verify")
-		})
-	}
-}
-
 func TestACertificateIsJudgedWhenTheActWasCountersigned(t *testing.T) {
 	w := newTW(t)
 	w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
@@ -268,121 +244,183 @@ func resignRaw(w *tw, typ, payload string) string {
 	return in + "." + b64u(ed25519.Sign(w.kms.priv, []byte(in)))
 }
 
+// approvalField adds a field to the sudo approval the fixture makes.
+func approvalField(k string, v any) func(*sudo) {
+	return func(s *sudo) {
+		if s.extra == nil {
+			s.extra = map[string]any{}
+		}
+		s.extra[k] = v
+	}
+}
+
+func TestAValidSudoApprovalVerifiesEndToEnd(t *testing.T) {
+	w := newTW(t)
+	w.addState(w.tenantClaims(1, true), actOpts{}, w.alice.signer())
+	w.addVersion(w.versionClaims(agentA, 1, 0, "bash@b1"), actOpts{}, w.alice.signer(), w.bob.signer())
+	w.addState(w.stateClaims(agentA, 1, "strict", 0), actOpts{}, w.alice.signer())
+	// a loosening while the second-approver setting is on, by two people
+	w.addState(w.stateClaims(agentA, 2, "tools", 0), actOpts{}, w.alice.signer(), w.bob.signer())
+	r := w.verify()
+	mustPass(t, r)
+	if r.ValidVersions != 1 || r.ValidStates != 3 {
+		t.Errorf("counts = %+v", r)
+	}
+}
+
+func TestEveryMethodMayApprove(t *testing.T) {
+	for _, m := range []string{"mfa", "hwk", "email_confirm", "passkey_basic", "pwd_confirmed", "fed_reauth"} {
+		t.Run(m, func(t *testing.T) {
+			w := newTW(t)
+			w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer(func(s *sudo) { s.method = []string{"pwd", m} }))
+			mustPass(t, w.verify())
+		})
+	}
+}
+
 func TestAnApprovalIsRefusedWhen(t *testing.T) {
-	flip := func(a *assertion) { a.flipSig = true }
 	runRefusals(t, []refusal{
-		{"its signature is flipped", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(flip))
-		}, "approval 0 by user:alice: the signature does not verify"},
-		{"it is over another digest", func(t *testing.T, w *tw) {
+		{"its only method is a bare password", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = []string{"pwd"} }))
+		}, "a bare password never does"},
+		{"it names no method", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.method = nil }))
+		}, "it names 0 methods"},
+		{"it names nine methods", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) {
+				s.method = []string{"mfa", "mfa", "mfa", "mfa", "mfa", "mfa", "mfa", "mfa", "mfa"}
+			}))
+		}, "it names 9 methods"},
+		{"its window is zero", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.windowS = 0 }))
+		}, "window_s 0 is outside"},
+		{"its window is longer than four hours", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.windowS = 14401 }))
+		}, "window_s 14401 is outside"},
+		{"it was confirmed before the person authenticated", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.authTime = w.clock + 100; s.confirmedAt = w.clock + 20 }))
+		}, "confirmed before the person authenticated"},
+		{"it was confirmed after the window ran out", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.authTime = w.clock - 1000; s.windowS = 900 }))
+		}, "sudo expired"},
+		{"it is over another act's digest", func(t *testing.T, w *tw) {
 			other := testDigest(ConfigVersionType, w.versionClaims(agentA, 99, 0))
-			w.addV3(actOpts{}, nil, func(_ [32]byte) map[string]any { return w.alice.approval(other) })
-		}, "challenge is not this act's digest"},
-		{"its challenge differs by a character", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.challenge = a.challenge[:len(a.challenge)-1] + "A" }))
-		}, "challenge is not this act's digest"},
-		{"the act was changed after it was approved", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{mutate: func(c map[string]any) { c["profiles"] = profiles("evil@e1") }}, nil, w.alice.signer())
-		}, "challenge is not this act's digest"},
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.digest = hex.EncodeToString(other[:]) }))
+		}, "names another act"},
 		{"it approved a version as a state", func(t *testing.T, w *tw) {
 			c := w.versionClaims(agentA, 3, 0)
 			asState := testDigest(ConfigStateType, c)
-			w.addVersion(c, actOpts{}, func(_ [32]byte) map[string]any { return w.alice.approval(asState) })
-		}, "challenge is not this act's digest"},
-		{"it names no relying party", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.rp = "" }))
-		}, "names no relying party"},
-		{"its origin is not https", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin, a.origin = "http://console.authfi.io", "http://console.authfi.io" }))
-		}, "not an https origin"},
-		{"its origin has a path", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin, a.origin = origin+"/x", origin+"/x" }))
-		}, "not an https origin"},
-		{"its client data names another origin than the approval", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.cdOrigin = "https://other.authfi.io" }))
-		}, "not the origin the approval states"},
-		{"its assertion was made cross-origin", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.crossOrigin = true }))
-		}, "cross-origin"},
-		{"its assertion says crossOrigin as a string", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.crossOrigin = "false" }))
-		}, "cross-origin"},
-		{"its assertion is a registration", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.typ = "webauthn.create" }))
-		}, "not a webauthn.get"},
-		{"its rp id hash is another site's", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.hashOf = "other.io" }))
-		}, "another relying party"},
-		{"user verification is clear", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.flags = 0x01 }))
-		}, "did not verify the user"},
-		{"user presence is clear", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.flags = 0x04 }))
-		}, "did not report the user present"},
-		{"its alg is none", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.algLabel = "none" }))
-		}, `alg "none" is not accepted`},
-		{"its alg is ES384", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.algLabel = "ES384" }))
-		}, `alg "ES384" is not accepted`},
-		{"its ES256 key is on another curve", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, newPasskey(t, "user:dave", "ES256-on-P384").signer())
-		}, "alg ES256 needs a P-256 key"},
-		{"its RSA key is too small", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, newPasskey(t, "user:dave", "RS256-1024").signer())
-		}, "RSA key of at least 2048 bits"},
-		{"its alg does not fit its key", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, nil, w.alice.signer(func(a *assertion) { a.algLabel = "EdDSA" }))
-		}, "alg EdDSA needs an Ed25519 key"},
-		{"its authenticator data stops before the counter ends", func(t *testing.T, w *tw) {
+			w.addVersion(c, actOpts{}, w.alice.signer(func(s *sudo) { s.digest = hex.EncodeToString(asState[:]) }))
+		}, "names another act"},
+		{"the act was changed after it was approved", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{mutate: func(c map[string]any) { c["profiles"] = profiles("evil@e1") }}, nil, w.alice.signer())
+		}, "names another act"},
+		{"its digest is in capitals", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{mutate: func(c map[string]any) {
 				ap := c["approvals"].([]any)[0].(map[string]any)
-				ad, _ := base64.RawURLEncoding.DecodeString(ap["ad"].(string))
-				ap["ad"] = b64u(ad[:36])
+				ap["digest"] = strings.ToUpper(ap["digest"].(string))
 			}}, nil, w.alice.signer())
-		}, "at least 37 bytes"},
-		{"its authenticator data is short", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{mutate: func(c map[string]any) {
-				ap := c["approvals"].([]any)[0].(map[string]any)
-				ap["ad"] = b64u([]byte("short"))
-			}}, nil, w.alice.signer())
-		}, "at least 37 bytes"},
+		}, "names another act"},
+		{"its statement is another sentence", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.statement = "a passkey signed this" }))
+		}, "not the fixed sudo statement"},
+		{"its sess is not hex", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.sess = strings.Repeat("zz", 16) }))
+		}, "sess is not 32 hex"},
+		{"its sess is too short", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.sess = "abcd" }))
+		}, "sess is not 32 hex"},
+		{"its sess is too long", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.sess = strings.Repeat("ab", 17) }))
+		}, "sess is not 32 hex"},
+		{"it carries a signature", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(approvalField("sig", "AAAA")))
+		}, "carries no sig"},
+		{"it carries a public key", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(approvalField("pub", "AAAA")))
+		}, "carries no pub"},
+		{"it carries a credential id", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(approvalField("kid", "cred")))
+		}, "carries no kid"},
+		{"it carries an algorithm", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(approvalField("alg", "ES256")))
+		}, "carries no alg"},
+		{"it was confirmed before the act was proposed", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.confirmedAt = w.clock - 10 }))
+		}, "confirmed before the act was proposed"},
+		{"it was confirmed after the act was countersigned", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, w.alice.signer(func(s *sudo) { s.confirmedAt = w.clock + 40 }))
+		}, "confirmed after the act was countersigned"},
 		{"it is by a name that is not a person", func(t *testing.T, w *tw) {
-			p := *w.alice
-			p.by = "ci:alice"
-			w.addV3(actOpts{}, nil, p.signer())
+			w.addV3(actOpts{}, nil, newPerson("ci:alice").signer())
 		}, "is by a person (user:<id>)"},
+		{"it is by user: with no subject", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, nil, newPerson("user:").signer())
+		}, "is by a person (user:<id>)"},
+		{"its kind is a passkey", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{mutate: func(c map[string]any) { c["approvals"].([]any)[0].(map[string]any)["kind"] = "passkey" }}, nil, w.alice.signer())
+		}, `kind "passkey" is no longer accepted`},
 		{"its kind is unknown", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{mutate: func(c map[string]any) { c["approvals"].([]any)[0].(map[string]any)["kind"] = "sms" }}, nil, w.alice.signer())
-		}, `kind "sms" is not passkey or ci`},
-		{"its key is not a key", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{mutate: func(c map[string]any) { c["approvals"].([]any)[0].(map[string]any)["pub"] = b64u([]byte("junk")) }}, nil, w.alice.signer())
-		}, "not a PKIX key"},
-		{"it is by a key that signed another message", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{mutate: func(c map[string]any) {
-				ap := c["approvals"].([]any)[0].(map[string]any)
-				ap["pub"] = w.bob.pub // the assertion was made by Alice's key
-			}}, nil, w.alice.signer())
-		}, "the signature does not verify"},
+		}, `kind "sms" is not sudo or ci`},
 	})
+}
+
+// The time rules have 2 s of skew either side, and no more.
+func TestTheSudoTimeRulesHaveTwoSecondsOfSkew(t *testing.T) {
+	ok := func(name string, mod func(w *tw, s *sudo)) {
+		t.Run(name, func(t *testing.T) {
+			w := newTW(t)
+			w.addState(w.tenantClaims(1, false), actOpts{}, func(d [32]byte, c map[string]any) map[string]any {
+				return w.alice.sudoFor(d, c, func(s *sudo) { mod(w, s) })
+			})
+			mustPass(t, w.verify())
+		})
+	}
+	// by the time the signer runs, w.clock is the act's proposed_at; approved_at is 30 s later.
+	ok("confirmed 2 s before the proposal", func(w *tw, s *sudo) { s.confirmedAt = w.clock - 2; s.authTime = s.confirmedAt - 100 })
+	ok("confirmed 2 s after the countersign", func(w *tw, s *sudo) { s.confirmedAt = w.clock + 30 + 2; s.authTime = s.confirmedAt - 100 })
+	ok("confirmed 2 s before auth_time", func(w *tw, s *sudo) { s.confirmedAt = w.clock + 10; s.authTime = s.confirmedAt + 2 })
+	ok("confirmed 2 s past the window", func(w *tw, s *sudo) { s.confirmedAt = w.clock + 10; s.windowS = 900; s.authTime = s.confirmedAt - 902 })
+}
+
+func TestTheSamePersonInOtherCaseIsOneApprover(t *testing.T) {
+	w := newTW(t)
+	w.addState(w.tenantClaims(1, true), actOpts{}, w.alice.signer())
+	w.addV3(actOpts{}, nil, w.alice.signer(), newPerson("user:ALICE").signer())
+	wantConfigFailure(t, w.verify(), "one approver counts once")
+}
+
+// Sudo approvals carry no kid: two empty kids are not one credential.
+func TestTwoSudoApproversWithNoKidAreTwoPeople(t *testing.T) {
+	w := newTW(t)
+	w.addState(w.tenantClaims(1, true), actOpts{}, w.alice.signer())
+	w.addV3(actOpts{}, []string{"bash@b1"}, w.alice.signer(), w.bob.signer())
+	mustPass(t, w.verify())
+}
+
+// A claim changed after the KMS countersigned it breaks the KMS signature.
+func TestATamperedSudoClaimAfterTheCountersignIsRefused(t *testing.T) {
+	w := newTW(t)
+	w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
+	tok := w.addVersion(w.versionClaims(agentA, 1, 0), actOpts{}, w.alice.signer())
+	parts := strings.Split(tok, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	changed := strings.Replace(string(raw), `"window_s":900`, `"window_s":901`, 1)
+	if changed == string(raw) {
+		t.Fatal("the window was not found in the payload")
+	}
+	parts[1] = b64u([]byte(changed))
+	w.versions[0].Token = strings.Join(parts, ".")
+	wantConfigFailure(t, w.verify(), "signature does not verify")
 }
 
 func TestTheApproversAreRefusedWhen(t *testing.T) {
 	runRefusals(t, []refusal{
-		{"one person approves twice, with two credentials", func(t *testing.T, w *tw) {
-			second := newPasskey(t, "user:alice", "ES256")
+		{"one person approves twice", func(t *testing.T, w *tw) {
+			second := newPerson("user:alice")
 			w.addV3(actOpts{}, nil, w.alice.signer(), second.signer())
 		}, "one approver counts once"},
-		{"one credential approves for two people", func(t *testing.T, w *tw) {
-			p := *w.bob
-			p.kid = w.alice.kid
-			w.addV3(actOpts{}, nil, w.alice.signer(), p.signer())
-		}, "by credential"},
-		{"one key approves under two names and credentials", func(t *testing.T, w *tw) {
-			p := *w.alice
-			p.by, p.kid = "user:bob", "another-credential"
-			w.addV3(actOpts{}, nil, w.alice.signer(), p.signer())
-		}, "the same public key"},
 		{"three approve", func(t *testing.T, w *tw) {
 			w.addV3(actOpts{}, nil, w.alice.signer(), w.bob.signer(), w.carol.signer())
 		}, "at most two"},
@@ -406,16 +444,6 @@ func TestTheApproversAreRefusedWhen(t *testing.T) {
 			w.addV3(actOpts{mutate: func(c map[string]any) { c["approvals"] = "yes" }}, nil)
 		}, "carries no approvals"},
 	})
-}
-
-// The console may run on a related origin, so an origin outside the relying party's domain is not refused offline.
-func TestARelatedOriginIsNotRefused(t *testing.T) {
-	w := newTW(t)
-	w.addState(w.tenantClaims(1, false), actOpts{}, w.alice.signer())
-	w.addVersion(w.versionClaims(agentA, 1, 0), actOpts{}, w.alice.signer(func(a *assertion) {
-		a.cdOrigin, a.origin = "https://console.example.com", "https://console.example.com"
-	}))
-	mustPass(t, w.verify())
 }
 
 func TestTwoPeopleMayApprove(t *testing.T) {
@@ -644,13 +672,13 @@ func TestCIApproval(t *testing.T) {
 			imposter := newCI(t, "pipeline", "EdDSA")
 			w.addV3(actOpts{}, []string{"bash@b1"}, imposter.signer())
 		}, "registered with another key"},
-		{"the signature is over the passkey message", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, []string{"bash@b1"}, func(d [32]byte) map[string]any {
+		{"the signature is over the approval domain, not the CI one", func(t *testing.T, w *tw) {
+			w.addV3(actOpts{}, []string{"bash@b1"}, func(d [32]byte, _ map[string]any) map[string]any {
 				return w.ci.approval(d, "authfi-agent-config-approval-v1:version\n")
 			})
 		}, "the signature does not verify"},
 		{"the signature is over another digest", func(t *testing.T, w *tw) {
-			w.addV3(actOpts{}, []string{"bash@b1"}, func(d [32]byte) map[string]any {
+			w.addV3(actOpts{}, []string{"bash@b1"}, func(d [32]byte, _ map[string]any) map[string]any {
 				d[0] ^= 1
 				return w.ci.approval(d, "authfi-agent-config-ci-approval-v1\n")
 			})
@@ -821,28 +849,6 @@ func TestTokensAreReadWithTheirNumbersAsWritten(t *testing.T) {
 		if _, err := strictObject([]byte(bad)); err == nil {
 			t.Errorf("%q was read", bad)
 		}
-	}
-}
-
-func TestAnOriginMustBeAnHTTPSOrigin(t *testing.T) {
-	for origin, ok := range map[string]bool{
-		"https://authfi.io":              true,
-		"https://console.authfi.io:8443": true,
-		"https://console.example.com":    true, // a related origin: not tied to the rp id here
-		"https://user@authfi.io":         false,
-		"https://authfi.io/":             false,
-		"https://authfi.io?x":            false,
-		"https://authfi.io#x":            false,
-		"http://authfi.io":               false,
-		"authfi.io":                      false,
-		"":                               false,
-	} {
-		if err := checkOrigin(origin, "authfi.io"); (err == nil) != ok {
-			t.Errorf("%q: err = %v, want ok = %v", origin, err, ok)
-		}
-	}
-	if checkOrigin("https://authfi.io", "") == nil {
-		t.Error("an empty rp id was accepted")
 	}
 }
 

@@ -7,31 +7,29 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
+
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
 // The fixtures build the world a tenant's configuration lives in, with real keys: a software root and intermediate
-// standing for the HSM chain, the tenant's agent_config key with its custody certificate, software passkey
-// authenticators of each algorithm and a CI key. The acts are signed the way the contracts say, with a digest
+// standing for the HSM chain, the tenant's agent_config key with its custody certificate, people who approve
+// by the sudo window and a CI key. The acts are signed the way the contracts say, with a digest
 // computed here from the contract's text and not by the code under test.
 
 const (
 	agentA = "agt_A1"
 	agentB = "agt_B2"
-	rpID   = "authfi.io"
-	origin = "https://console.authfi.io"
 )
 
 var (
@@ -140,103 +138,57 @@ func (p *pki) kmsKey(t *testing.T, tenant string, s leafSpec) *kmsKey {
 		base64.StdEncoding.EncodeToString(leaf.Raw), base64.StdEncoding.EncodeToString(p.inter.Raw)}}
 }
 
-// passkey is a software authenticator.
-type passkey struct {
-	by, kid, alg string
-	priv         crypto.Signer
-	pub          string
+// person is someone who approves by the "Confirm it's you" sudo window.
+type person struct{ by string }
+
+func newPerson(by string) *person { return &person{by: by} }
+
+// sudo lets a test bend what the console token and the window say.
+type sudo struct {
+	by          string
+	method      []string
+	authTime    int64 // 0: ten minutes before the proposal
+	windowS     int64
+	confirmedAt int64 // 0: ten seconds after the proposal
+	sess        string
+	digest      string // "" : the act's own
+	statement   string
+	extra       map[string]any
 }
 
-var (
-	rsaOnce sync.Once
-	rsaKey  *rsa.PrivateKey
-)
-
-func newPasskey(t *testing.T, by, alg string) *passkey {
-	t.Helper()
-	p := &passkey{by: by, alg: alg}
-	cred := make([]byte, 16)
-	_, _ = rand.Read(cred)
-	p.kid = b64u(cred)
-	var err error
-	switch alg {
-	case "ES256":
-		p.priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	case "ES256-on-P384": // an ES256 label on a key of another curve
-		p.priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-		p.alg = "ES256"
-	case "RS256-1024": // an RSA key too small to trust
-		p.priv, err = rsa.GenerateKey(rand.Reader, 1024)
-		p.alg = "RS256"
-	case "RS256":
-		rsaOnce.Do(func() { rsaKey, err = rsa.GenerateKey(rand.Reader, 2048) })
-		p.priv = rsaKey
-	case "EdDSA":
-		_, p.priv, err = ed25519.GenerateKey(rand.Reader)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(p.priv.Public())
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.pub = b64u(der)
-	return p
-}
-
-// assertion lets a test make the authenticator do something it should not.
-type assertion struct {
-	challenge   string
-	typ         string
-	cdOrigin    string // in the client data
-	origin      string // the approval's own claim
-	rp          string
-	hashOf      string // what the authenticator hashed as the rp id
-	flags       byte
-	crossOrigin any
-	algLabel    string
-	flipSig     bool
-}
-
-func (p *passkey) approval(d [32]byte, mods ...func(*assertion)) map[string]any {
-	a := assertion{challenge: b64u(d[:]), typ: "webauthn.get", cdOrigin: origin, origin: origin, rp: rpID, flags: 0x05, algLabel: p.alg}
+func (p *person) sudoFor(d [32]byte, claims map[string]any, mods ...func(*sudo)) map[string]any {
+	proposed := claims["proposed_at"].(int64)
+	s := sudo{by: p.by, method: []string{"mfa", "hwk"}, windowS: 900, sess: hex.EncodeToString(sessHash(p.by)),
+		digest: hex.EncodeToString(d[:]), statement: testStatement}
 	for _, m := range mods {
-		m(&a)
+		m(&s)
 	}
-	if a.hashOf == "" {
-		a.hashOf = a.rp
+	if s.authTime == 0 {
+		s.authTime = proposed - 600
 	}
-	cd := map[string]any{"type": a.typ, "challenge": a.challenge, "origin": a.cdOrigin}
-	if a.crossOrigin != nil {
-		cd["crossOrigin"] = a.crossOrigin
+	if s.confirmedAt == 0 {
+		s.confirmedAt = proposed + 10
 	}
-	cdRaw, _ := json.Marshal(cd)
-	rpHash := sha256.Sum256([]byte(a.hashOf))
-	ad := append(append([]byte{}, rpHash[:]...), a.flags, 0, 0, 0, 7)
-	cdHash := sha256.Sum256(cdRaw)
-	msg := append(append([]byte{}, ad...), cdHash[:]...)
-	var sig []byte
-	var err error
-	switch p.alg {
-	case "ES256":
-		h := sha256.Sum256(msg)
-		sig, err = ecdsa.SignASN1(rand.Reader, p.priv.(*ecdsa.PrivateKey), h[:])
-	case "RS256":
-		h := sha256.Sum256(msg)
-		sig, err = rsa.SignPKCS1v15(rand.Reader, p.priv.(*rsa.PrivateKey), crypto.SHA256, h[:])
-	case "EdDSA":
-		sig = ed25519.Sign(p.priv.(ed25519.PrivateKey), msg)
+	ap := map[string]any{"kind": "sudo", "by": s.by, "method": toAny(s.method), "auth_time": s.authTime, "window_s": s.windowS,
+		"confirmed_at": s.confirmedAt, "sess": s.sess, "digest": s.digest, "statement": s.statement}
+	for k, v := range s.extra {
+		ap[k] = v
 	}
-	if err != nil {
-		panic(err)
-	}
-	if a.flipSig {
-		sig[len(sig)-1] ^= 0x01
-	}
-	return map[string]any{"kind": "passkey", "by": p.by, "kid": p.kid, "alg": a.algLabel, "pub": p.pub, "rp": a.rp,
-		"origin": a.origin, "ad": b64u(ad), "cd": b64u(cdRaw), "sig": b64u(sig)}
+	return ap
 }
+
+func sessHash(by string) []byte { h := sha256.Sum256([]byte("sid-of-" + by)); return h[:16] }
+
+func toAny(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
+// testStatement is the contract's sentence, written here from its text.
+const testStatement = "confirmed by sudo (Confirm it's you) within the project's sudo window; no passkey of the person signed this act"
 
 // ciSigner is a pipeline's key.
 type ciSigner struct {
@@ -279,14 +231,16 @@ func (c *ciSigner) approval(d [32]byte, prefix string) map[string]any {
 }
 
 func (c *ciSigner) signer() signerFn {
-	return func(d [32]byte) map[string]any { return c.approval(d, "authfi-agent-config-ci-approval-v1\n") }
+	return func(d [32]byte, _ map[string]any) map[string]any {
+		return c.approval(d, "authfi-agent-config-ci-approval-v1\n")
+	}
 }
 
 // signerFn makes one approval over a digest.
-type signerFn func(d [32]byte) map[string]any
+type signerFn func(d [32]byte, claims map[string]any) map[string]any
 
-func (p *passkey) signer(mods ...func(*assertion)) signerFn {
-	return func(d [32]byte) map[string]any { return p.approval(d, mods...) }
+func (p *person) signer(mods ...func(*sudo)) signerFn {
+	return func(d [32]byte, claims map[string]any) map[string]any { return p.sudoFor(d, claims, mods...) }
 }
 
 // testDigest is the contract's digest, written here from its text.
@@ -316,9 +270,9 @@ type tw struct {
 	tenant string
 	pki    *pki
 	kms    *kmsKey
-	alice  *passkey
-	bob    *passkey
-	carol  *passkey
+	alice  *person
+	bob    *person
+	carol  *person
 	ci     *ciSigner
 	clock  int64
 	now    time.Time
@@ -331,9 +285,9 @@ func newTW(t *testing.T) *tw {
 	t.Helper()
 	w := &tw{t: t, tenant: testTenant, pki: newPKI(t), clock: baseTime.Unix(), now: baseTime.Add(3 * time.Hour)}
 	w.kms = w.pki.kmsKey(t, w.tenant, leafSpec{})
-	w.alice = newPasskey(t, "user:alice", "ES256")
-	w.bob = newPasskey(t, "user:bob", "ES256")
-	w.carol = newPasskey(t, "user:carol", "EdDSA")
+	w.alice = newPerson("user:alice")
+	w.bob = newPerson("user:bob")
+	w.carol = newPerson("user:carol")
 	w.ci = newCI(t, "pipeline", "EdDSA")
 	return w
 }
@@ -354,7 +308,7 @@ func (w *tw) sign(typ string, claims map[string]any, o actOpts, signers ...signe
 	d := testDigest(typ, claims)
 	var approvals []any
 	for _, s := range signers {
-		approvals = append(approvals, s(d))
+		approvals = append(approvals, s(d, claims))
 	}
 	if approvals != nil {
 		claims["approvals"] = approvals

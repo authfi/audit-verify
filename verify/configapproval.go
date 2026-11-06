@@ -6,13 +6,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 )
 
@@ -20,14 +19,20 @@ const (
 	approvalDomain = "authfi-agent-config-approval-v1:"
 	ciDomain       = "authfi-agent-config-ci-approval-v1\n"
 
-	kindPasskey = "passkey"
+	kindSudo    = "sudo"
 	kindCI      = "ci"
+	kindPasskey = "passkey" // no longer accepted; named so the refusal can say why
 
-	flagUP = 0x01
-	flagUV = 0x04
+	// sudoStatement is the sentence every sudo approval carries, word for word.
+	sudoStatement = "confirmed by sudo (Confirm it's you) within the project's sudo window; no passkey of the person signed this act"
 
-	minRSABits = 2048
+	maxSudoWindow = 14400 // seconds; the longest sudo window a project can have
+	sudoSkew      = 2     // seconds of clock skew allowed either side
 )
+
+// sudoMethods are the proofs that set auth_time and may back an approval. A bare password is not one.
+var sudoMethods = map[string]bool{"mfa": true, "hwk": true, "email_confirm": true, "passkey_basic": true,
+	"pwd_confirmed": true, "fed_reauth": true}
 
 // unsignedClaims are left out of the body the approvers sign: who approved, and when the key countersigned.
 var unsignedClaims = []string{"approvals", "approved_by", "second_approver", "approved_at"}
@@ -72,16 +77,20 @@ func actDigest(typ string, claims map[string]any) ([32]byte, error) {
 
 // approval is one entry of an act's approvals. The fields not of its kind are empty.
 type approval struct {
-	Kind, By, Kid, Alg, Pub string
-	RP, Origin, AD, CD, Sig string
-	key                     crypto.PublicKey
+	Kind, By, Kid, Alg, Pub, Sig string
+	key                          crypto.PublicKey
+
+	// sudo
+	Method                         []string
+	AuthTime, WindowS, ConfirmedAt int64
+	Sess, Digest, Statement        string
 }
 
-// person reports whether the approval is a person's: only a passkey assertion is.
-func (a approval) person() bool { return a.Kind == kindPasskey }
+// person reports whether the approval is a person's: only a sudo confirmation is.
+func (a approval) person() bool { return a.Kind == kindSudo }
 
 // parseApprovals reads the approvals claim. It checks the shape (count, kinds, who) and the encodings, and parses
-// the public keys; it does not check a signature.
+// the public keys; it does not check a signature, a digest or a sudo window against the act.
 func parseApprovals(claims map[string]any) ([]approval, []string) {
 	raw, ok := claims["approvals"].([]any)
 	if !ok || len(raw) == 0 {
@@ -110,11 +119,11 @@ func parseApprovals(claims map[string]any) ([]approval, []string) {
 	if len(out) == 2 {
 		a, b := out[0], out[1]
 		switch {
-		case a.By == b.By:
+		case strings.EqualFold(a.By, b.By):
 			problems = append(problems, fmt.Sprintf("both approvals are by %s: one approver counts once", a.By))
-		case a.Kid == b.Kid:
+		case a.Kid != "" && a.Kid == b.Kid:
 			problems = append(problems, fmt.Sprintf("both approvals are by credential %s", a.Kid))
-		case a.Pub == b.Pub:
+		case a.Pub != "" && a.Pub == b.Pub:
 			problems = append(problems, "both approvals are by the same public key")
 		}
 	}
@@ -123,20 +132,19 @@ func parseApprovals(claims map[string]any) ([]approval, []string) {
 
 func parseApproval(m map[string]any) (approval, []string) {
 	str := func(k string) string { s, _ := claimString(m, k); return s }
-	a := approval{Kind: str("kind"), By: str("by"), Kid: str("kid"), Alg: str("alg"), Pub: str("pub"),
-		RP: str("rp"), Origin: str("origin"), AD: str("ad"), CD: str("cd"), Sig: str("sig")}
+	a := approval{Kind: str("kind"), By: str("by"), Kid: str("kid"), Alg: str("alg"), Pub: str("pub"), Sig: str("sig")}
 	var problems []string
 	switch a.Kind {
+	case kindSudo:
+		return parseSudo(m, a)
 	case kindPasskey:
-		if !strings.HasPrefix(a.By, "user:") || len(a.By) == len("user:") {
-			problems = append(problems, fmt.Sprintf("a passkey approval is by a person (user:<id>), not %q", a.By))
-		}
+		return a, []string{`kind "passkey" is no longer accepted: a person approves by sudo confirmation, not by a passkey signature`}
 	case kindCI:
 		if !strings.HasPrefix(a.By, "ci:") || len(a.By) == len("ci:") {
 			problems = append(problems, fmt.Sprintf("a ci approval is by a CI key (ci:<name>), not %q", a.By))
 		}
 	default:
-		return a, []string{fmt.Sprintf("kind %q is not passkey or ci", a.Kind)}
+		return a, []string{fmt.Sprintf("kind %q is not sudo or ci", a.Kind)}
 	}
 	if a.Kid == "" {
 		problems = append(problems, "it names no credential")
@@ -146,10 +154,85 @@ func parseApproval(m map[string]any) (approval, []string) {
 		return a, append(problems, err.Error())
 	}
 	a.key = pub
-	if err := keyMatchesAlg(pub, a.Alg, a.Kind); err != nil {
+	if err := keyMatchesAlg(pub, a.Alg); err != nil {
 		problems = append(problems, err.Error())
 	}
 	return a, problems
+}
+
+// parseSudo reads a sudo approval and applies the rules that need only the approval itself (contract rules 1, 2, 3
+// and 5). checkSudo applies rule 4 and the time relations to the act.
+func parseSudo(m map[string]any, a approval) (approval, []string) {
+	var problems []string
+	if !strings.HasPrefix(a.By, "user:") || len(a.By) == len("user:") {
+		problems = append(problems, fmt.Sprintf("a sudo approval is by a person (user:<id>), not %q", a.By))
+	}
+	a.Statement, _ = claimString(m, "statement")
+	if a.Statement != sudoStatement {
+		problems = append(problems, "its statement is not the fixed sudo statement")
+	}
+	if raw, ok := m["method"].([]any); !ok {
+		problems = append(problems, "it names no method")
+	} else {
+		strong := false
+		for _, r := range raw {
+			s, ok := r.(string)
+			if !ok {
+				problems = append(problems, "a method is not a string")
+				continue
+			}
+			a.Method = append(a.Method, s)
+			strong = strong || sudoMethods[s]
+		}
+		switch {
+		case len(raw) < 1 || len(raw) > 8:
+			problems = append(problems, fmt.Sprintf("it names %d methods; 1 to 8 are allowed", len(raw)))
+		case !strong:
+			problems = append(problems, fmt.Sprintf("its methods %q include none that may approve (a bare password never does)", a.Method))
+		}
+	}
+	var ok1, ok2, ok3 bool
+	a.AuthTime, ok1 = claimInt(m, "auth_time")
+	a.WindowS, ok2 = claimInt(m, "window_s")
+	a.ConfirmedAt, ok3 = claimInt(m, "confirmed_at")
+	switch {
+	case !ok1 || !ok2 || !ok3:
+		problems = append(problems, "auth_time, window_s and confirmed_at must be integers")
+	case a.AuthTime <= 0:
+		problems = append(problems, "auth_time is not a time")
+	case a.WindowS <= 0 || a.WindowS > maxSudoWindow:
+		problems = append(problems, fmt.Sprintf("window_s %d is outside 1 to %d", a.WindowS, maxSudoWindow))
+	case a.ConfirmedAt < a.AuthTime-sudoSkew:
+		problems = append(problems, "it was confirmed before the person authenticated")
+	case a.ConfirmedAt-a.AuthTime > a.WindowS+sudoSkew:
+		problems = append(problems, "the sudo window had expired when it was confirmed (sudo expired)")
+	}
+	a.Sess, _ = claimString(m, "sess")
+	if b, err := hex.DecodeString(a.Sess); err != nil || len(b) != 16 {
+		problems = append(problems, "sess is not 32 hex characters")
+	}
+	a.Digest, _ = claimString(m, "digest")
+	for _, k := range []string{"kid", "alg", "pub", "sig"} {
+		if _, present := m[k]; present {
+			problems = append(problems, fmt.Sprintf("a sudo approval carries no %s: it is not a signature", k))
+		}
+	}
+	return a, problems
+}
+
+// checkSudo checks that a sudo approval names this very act and was confirmed between the act's proposal and its
+// countersign.
+func checkSudo(a approval, d [32]byte, proposedAt, approvedAt int64) error {
+	if a.Digest != hex.EncodeToString(d[:]) {
+		return fmt.Errorf("the confirmation names another act: its digest is not this act's digest")
+	}
+	if a.ConfirmedAt < proposedAt-sudoSkew {
+		return fmt.Errorf("it was confirmed before the act was proposed")
+	}
+	if a.ConfirmedAt > approvedAt+sudoSkew {
+		return fmt.Errorf("it was confirmed after the act was countersigned")
+	}
+	return nil
 }
 
 // parsePublicKey reads a PKIX DER public key in base64url.
@@ -165,8 +248,8 @@ func parsePublicKey(s string) (crypto.PublicKey, error) {
 	return pub, nil
 }
 
-// keyMatchesAlg checks that the algorithm the approval names is one allowed for its kind and fits the key.
-func keyMatchesAlg(pub crypto.PublicKey, alg, kind string) error {
+// keyMatchesAlg checks that the algorithm a CI approval names is allowed and fits the key.
+func keyMatchesAlg(pub crypto.PublicKey, alg string) error {
 	switch alg {
 	case "ES256":
 		k, ok := pub.(*ecdsa.PublicKey)
@@ -177,100 +260,19 @@ func keyMatchesAlg(pub crypto.PublicKey, alg, kind string) error {
 		if _, ok := pub.(ed25519.PublicKey); !ok {
 			return fmt.Errorf("alg EdDSA needs an Ed25519 key")
 		}
-	case "RS256":
-		k, ok := pub.(*rsa.PublicKey)
-		if kind != kindPasskey {
-			return fmt.Errorf("alg RS256 is for a passkey, not a CI key")
-		}
-		if !ok || k.N.BitLen() < minRSABits {
-			return fmt.Errorf("alg RS256 needs an RSA key of at least %d bits", minRSABits)
-		}
 	default:
-		return fmt.Errorf("alg %q is not accepted (ES256, RS256 or EdDSA)", alg)
+		return fmt.Errorf("alg %q is not accepted (ES256 or EdDSA)", alg)
 	}
 	return nil
 }
 
-// challenge is the digest as a WebAuthn challenge: base64url without padding.
-func challenge(d [32]byte) string { return base64.RawURLEncoding.EncodeToString(d[:]) }
-
-// checkPasskey checks a passkey approval against the act's digest with the standard library: the assertion
-// is a WebAuthn "get" whose challenge is the digest, from an origin under the relying party, made with the user
-// present and verified, and the signature over authenticatorData || sha256(clientDataJSON) verifies.
-func checkPasskey(a approval, d [32]byte) error {
-	cdRaw, err := base64.RawURLEncoding.DecodeString(a.CD)
-	if err != nil || len(cdRaw) == 0 {
-		return fmt.Errorf("the client data is not base64url")
-	}
-	cd, err := strictObject(cdRaw)
-	if err != nil {
-		return fmt.Errorf("the client data %w", err)
-	}
-	if t, _ := claimString(cd, "type"); t != "webauthn.get" {
-		return fmt.Errorf("the client data is not a webauthn.get assertion")
-	}
-	if c, _ := claimString(cd, "challenge"); c != challenge(d) {
-		return fmt.Errorf("the assertion's challenge is not this act's digest")
-	}
-	if o, _ := claimString(cd, "origin"); o != a.Origin {
-		return fmt.Errorf("the assertion's origin is not the origin the approval states")
-	}
-	if cross, present := cd["crossOrigin"]; present && cross != false {
-		return fmt.Errorf("the assertion was made cross-origin")
-	}
-	if err := checkOrigin(a.Origin, a.RP); err != nil {
-		return err
-	}
-	ad, err := base64.RawURLEncoding.DecodeString(a.AD)
-	if err != nil || len(ad) < 37 {
-		return fmt.Errorf("the authenticator data is not base64url of at least 37 bytes")
-	}
-	if rp := sha256.Sum256([]byte(a.RP)); !bytes.Equal(ad[:32], rp[:]) {
-		return fmt.Errorf("the authenticator data is for another relying party than %q", a.RP)
-	}
-	if ad[32]&flagUP == 0 {
-		return fmt.Errorf("the authenticator did not report the user present")
-	}
-	if ad[32]&flagUV == 0 {
-		return fmt.Errorf("the authenticator did not verify the user")
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(a.Sig)
-	if err != nil || len(sig) == 0 {
-		return fmt.Errorf("the signature is not base64url")
-	}
-	cdHash := sha256.Sum256(cdRaw)
-	msg := append(append([]byte{}, ad...), cdHash[:]...)
-	return verifyWith(a.key, a.Alg, msg, sig)
-}
-
-// checkOrigin checks that origin is an https origin and the relying party id is named. The origin is not tied to the
-// relying party here: the console may run on a related origin, and the origin was checked against the project's
-// allowed origins when the approval was made. The authenticator data still has to be for this relying party.
-func checkOrigin(origin, rp string) error {
-	u, err := url.Parse(origin)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" ||
-		u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return fmt.Errorf("the origin %q is not an https origin", origin)
-	}
-	if rp == "" {
-		return fmt.Errorf("the approval names no relying party")
-	}
-	return nil
-}
-
-// verifyWith verifies sig over msg: ES256 and RS256 sign sha256(msg), EdDSA signs msg.
+// verifyWith verifies sig over msg: ES256 signs sha256(msg), EdDSA signs msg.
 func verifyWith(pub crypto.PublicKey, alg string, msg, sig []byte) error {
 	switch alg {
 	case "ES256":
 		k, ok := pub.(*ecdsa.PublicKey)
 		h := sha256.Sum256(msg)
 		if !ok || !ecdsa.VerifyASN1(k, h[:], sig) {
-			return fmt.Errorf("the signature does not verify")
-		}
-	case "RS256":
-		k, ok := pub.(*rsa.PublicKey)
-		h := sha256.Sum256(msg)
-		if !ok || rsa.VerifyPKCS1v15(k, crypto.SHA256, h[:], sig) != nil {
 			return fmt.Errorf("the signature does not verify")
 		}
 	case "EdDSA":

@@ -10,7 +10,7 @@ import (
 )
 
 // act is one version or state act that has passed the checks that need only the act itself: the key, the
-// signature, the digest and the passkey approvals. What depends on other acts is checked after, in order.
+// signature, the digest and the sudo approvals. What depends on other acts is checked after, in order.
 type act struct {
 	typ        string
 	digest     [32]byte
@@ -136,10 +136,10 @@ func readAct(token, wantTyp, tenant string, o ConfigOptions, now time.Time) (*ac
 	if len(perrs) == 0 {
 		problems = append(problems, checkApprovers(claims, approvals)...)
 		for i, ap := range approvals {
-			if ap.Kind != kindPasskey {
+			if ap.Kind != kindSudo {
 				continue
 			}
-			if err := checkPasskey(ap, d); err != nil {
+			if err := checkSudo(ap, d, a.proposedAt, approvedAt); err != nil {
 				add("approval %d by %s: %v", i, ap.By, err)
 			}
 		}
@@ -303,7 +303,7 @@ func readCIKeys(raw any) ([]ciKey, []string) {
 			problems = append(problems, fmt.Sprintf("ci key id %q appears twice", k.ID))
 		case err != nil:
 			problems = append(problems, fmt.Sprintf("ci key %s: %v", k.ID, err))
-		case (k.Alg != "ES256" && k.Alg != "EdDSA") || keyMatchesAlg(pub, k.Alg, kindCI) != nil:
+		case (k.Alg != "ES256" && k.Alg != "EdDSA") || keyMatchesAlg(pub, k.Alg) != nil:
 			problems = append(problems, fmt.Sprintf("ci key %s: alg %q does not fit the key", k.ID, k.Alg))
 		default:
 			k.key = pub
@@ -611,7 +611,7 @@ func (c *configRun) agentStates() {
 
 // agentRules checks an agent's state against the one before it. The floor never falls. The tier falling (watch, tools, strict,
 // in that order) loosens, and needs two people while the tenant's second-approver setting stood on when the act was proposed
-// (with it off one person's passkey may loosen). With no state before, the tier in force is tools when the agent has a
+// (with it off one person's sudo confirmation may loosen). With no state before, the tier in force is tools when the agent has a
 // version, so a first state of watch loosens.
 func (c *configRun) agentRules(a, prev *act) []string {
 	baseline, baseFloor := 0, int64(0)
