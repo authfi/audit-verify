@@ -41,6 +41,11 @@ const Format = "authfi.audit.proof.v1"
 // never be read as a JWS signing input.
 const HeadPrefix = "authfi.audit.chain-head.v1"
 
+// BackfillHeadPrefix names a head signed after the fact: the tape already held later signed heads when this one was
+// signed, and the signer says so inside the signed bytes. It is a different message from HeadPrefix, so a head
+// cannot be passed off as one kind or the other without breaking its signature.
+const BackfillHeadPrefix = "authfi.audit.chain-head.backfill.v1"
+
 const keyRevoked = "disabled"
 
 // Entry is one chain entry and the audit event it attests.
@@ -64,6 +69,10 @@ type Head struct {
 	Algorithm string `json:"algorithm"`
 	Signature string `json:"signature"`
 	SignedAt  string `json:"signed_at,omitempty"`
+	// Backfilled marks a head signed after the fact over a stretch that had no signed head. It attests the chain at
+	// Seq as of SignedAt, which is when the signature was made, not when the entry was recorded. The mark is inside
+	// the signed bytes (BackfillHeadPrefix), so clearing or setting it fails the signature.
+	Backfilled bool `json:"backfilled,omitempty"`
 }
 
 // What a key may sign. A head verifies only under an audit_head key and a receipt only under a receipt key,
@@ -125,6 +134,9 @@ type Report struct {
 	Entries        int
 	// SignedTo is the highest position in the bundle a good signature covers; 0 when none does.
 	SignedTo int64
+	// Backfilled is how many of the bundle's verified heads were signed after the fact. They vouch for the chain as of
+	// their signing time, not as of the time the entries were recorded.
+	Backfilled int
 	// Unsigned is how many entries come after SignedTo. They are linked but nothing vouches for them yet.
 	Unsigned int64
 	// ChainStartsAtGenesis is true when the first entry has no predecessor. When false, older entries were
@@ -172,7 +184,16 @@ func EntryHash(prev, id, actor, action, resource, recordedAt string, metadata []
 
 // HeadMessage is the exact bytes signed for a tenant's chain head at seq.
 func HeadMessage(tenant string, seq int64, entryHash string) []byte {
-	return []byte(HeadPrefix + "\n" + tenant + "\n" + strconv.FormatInt(seq, 10) + "\n" + entryHash)
+	return headMessage(HeadPrefix, tenant, seq, entryHash)
+}
+
+// BackfillHeadMessage is the exact bytes signed for a backfilled head.
+func BackfillHeadMessage(tenant string, seq int64, entryHash string) []byte {
+	return headMessage(BackfillHeadPrefix, tenant, seq, entryHash)
+}
+
+func headMessage(prefix, tenant string, seq int64, entryHash string) []byte {
+	return []byte(prefix + "\n" + tenant + "\n" + strconv.FormatInt(seq, 10) + "\n" + entryHash)
 }
 
 // Verify checks b.
@@ -230,6 +251,9 @@ func Verify(b Bundle, o Options) Report {
 			fail("the entry at position %d is not the one that was signed: the tape was rewritten after signing", h.Seq)
 			continue
 		}
+		if h.Backfilled {
+			r.Backfilled++
+		}
 		if h.Seq > r.SignedTo {
 			r.SignedTo = h.Seq
 		}
@@ -238,6 +262,9 @@ func Verify(b Bundle, o Options) Report {
 		r.Notes = append(r.Notes, "no signed head covers these entries, so only the links between them were checked")
 	} else {
 		r.Unsigned = r.ToSeq - r.SignedTo
+	}
+	if r.Backfilled > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("%d signed heads were signed after the fact: each vouches for the chain as it stands at the time it was signed, not as it stood when its entry was recorded", r.Backfilled))
 	}
 	if !r.ChainStartsAtGenesis && len(b.Entries) > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("entries before position %d are not in this bundle", r.FromSeq))
@@ -367,7 +394,11 @@ func checkHead(tenant string, h Head, keys []Key) (Key, error) {
 	if err != nil {
 		return Key{}, fmt.Errorf("the signature is not base64url")
 	}
-	if !ed25519.Verify(pub, HeadMessage(tenant, h.Seq, h.EntryHash), sig) {
+	msg := HeadMessage(tenant, h.Seq, h.EntryHash)
+	if h.Backfilled {
+		msg = BackfillHeadMessage(tenant, h.Seq, h.EntryHash)
+	}
+	if !ed25519.Verify(pub, msg, sig) {
 		return Key{}, fmt.Errorf("the signature does not verify under key %s", h.KeyID)
 	}
 	return k, nil

@@ -4,6 +4,13 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
 
 ## Unreleased
 
+### Added
+
+- Backfilled heads. A head signed after the fact, over a stretch the tape had no signed head for, is marked
+  `backfilled` and signed under its own prefix (`authfi.audit.chain-head.backfill.v1`), so the mark cannot be added
+  or cleared without breaking the signature. The report counts them (`Backfilled`) and says what they vouch for.
+  Edits to the stretch are found exactly as for any other head.
+
 ### Changed
 
 - `config`: a person's approval of an agent configuration act is now sudo evidence ("Confirm it's you", the
