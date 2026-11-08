@@ -157,6 +157,9 @@ func Files() map[string][]byte {
 	add := func(v vectors.Vector, b verify.Bundle) {
 		path := v.Kind + "/" + v.ID + ".bundle.json"
 		v.Input = map[string]string{"bundle": path}
+		// These vectors carry no pinned root, so they say so: when pinning becomes the verifier's default they
+		// keep passing.
+		v.Args = []string{"--unpinned"}
 		files[path] = encode(b)
 		vs = append(vs, v)
 	}
@@ -179,14 +182,14 @@ func Files() map[string][]byte {
 	t = newTape()
 	t.filler(6)
 	t.headSigner = newSigner("stranger", "vector-head-1", verify.UseAuditHead)
-	add(vectors.Vector{ID: "H1", Kind: "head", Expect: fail("head_signature", "the head at position"),
+	add(vectors.Vector{ID: "H1", Kind: "head", Expect: fail("head_signature", "the signature does not verify under key"),
 		Why: "the head names the tenant's audit_head key but was signed by another key"}, t.bundle())
 
 	t = newTape()
 	t.filler(6)
 	t.headSigner = t.receipt
 	t.headKeyID = t.receipt.kid
-	add(vectors.Vector{ID: "H2", Kind: "head", Expect: fail("head_wrong_use", "the head at position"),
+	add(vectors.Vector{ID: "H2", Kind: "head", Expect: fail("head_wrong_use", "may not sign a head"),
 		Why: "the gateway's receipt key signs a head: a key signs only the statements of its own use"}, t.bundle())
 
 	t = newTape()
@@ -202,7 +205,7 @@ func Files() map[string][]byte {
 	t.filler(2)
 	raw := t.specs[i].meta["receipt"].(string)
 	t.specs[i].meta["receipt"] = raw[:len(raw)-4] + flip(raw[len(raw)-4:])
-	add(vectors.Vector{ID: "R2", Kind: "receipt", Expect: fail("receipt_signature", "does not verify under key"),
+	add(vectors.Vector{ID: "R2", Kind: "receipt", Expect: fail("receipt_signature", "its signature does not verify under key"),
 		Why: "the last bytes of a decision receipt's signature are changed and the chain and head are rebuilt over the damaged entry"}, t.bundle())
 
 	manifest := vectors.Manifest{Format: vectors.Format, VerifierMin: "1.3.0", At: At.Format(time.RFC3339), Vectors: vs}

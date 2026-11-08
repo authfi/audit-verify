@@ -9,6 +9,9 @@
       "input": {
         "bundle": "tape/T1.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "pass"
       },
@@ -20,6 +23,9 @@
       "input": {
         "bundle": "tape/T2.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "fail",
         "reason": "entry_changed",
@@ -33,10 +39,13 @@
       "input": {
         "bundle": "head/H1.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "fail",
         "reason": "head_signature",
-        "failure_contains": "the head at position"
+        "failure_contains": "the signature does not verify under key"
       },
       "why": "the head names the tenant's audit_head key but was signed by another key"
     },
@@ -46,10 +55,13 @@
       "input": {
         "bundle": "head/H2.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "fail",
         "reason": "head_wrong_use",
-        "failure_contains": "the head at position"
+        "failure_contains": "may not sign a head"
       },
       "why": "the gateway's receipt key signs a head: a key signs only the statements of its own use"
     },
@@ -59,6 +71,9 @@
       "input": {
         "bundle": "receipt/R1.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "pass"
       },
@@ -70,10 +85,13 @@
       "input": {
         "bundle": "receipt/R2.bundle.json"
       },
+      "args": [
+        "--unpinned"
+      ],
       "expect": {
         "result": "fail",
         "reason": "receipt_signature",
-        "failure_contains": "does not verify under key"
+        "failure_contains": "its signature does not verify under key"
       },
       "why": "the last bytes of a decision receipt's signature are changed and the chain and head are rebuilt over the damaged entry"
     }

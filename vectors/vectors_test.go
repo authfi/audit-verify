@@ -41,15 +41,7 @@ func TestEveryVectorGivesItsExpectedResult(t *testing.T) {
 	}
 	for _, v := range m.Vectors {
 		t.Run(v.ID, func(t *testing.T) {
-			raw, err := os.ReadFile(v.Input["bundle"])
-			if err != nil {
-				t.Fatal(err)
-			}
-			var b verify.Bundle
-			if err := json.Unmarshal(raw, &b); err != nil {
-				t.Fatal(err)
-			}
-			r := verify.Verify(b, verify.Options{})
+			r := run(t, v)
 			joined := strings.Join(r.Failures, "\n")
 			switch v.Expect.Result {
 			case "pass":
@@ -65,6 +57,59 @@ func TestEveryVectorGivesItsExpectedResult(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// run gives the verifier the vector's bundle and the options its args name. "--unpinned" is the only arg the
+// harness knows: it is the verifier's default today and an explicit flag from the release that pins the embedded
+// root by default, so a vector that sets it keeps passing when that default changes. An arg it does not know
+// fails the test rather than being ignored.
+func run(t *testing.T, v vectors.Vector) verify.Report {
+	t.Helper()
+	raw, err := os.ReadFile(v.Input["bundle"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b verify.Bundle
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range v.Args {
+		if a != "--unpinned" {
+			t.Fatalf("%s: the harness does not know the arg %q", v.ID, a)
+		}
+	}
+	return verify.Verify(b, verify.Options{})
+}
+
+// Every vector records how it is pinned, so it keeps its result when the default changes.
+func TestEveryVectorSaysHowItIsPinned(t *testing.T) {
+	for _, v := range load(t).Vectors {
+		if len(v.Args) == 0 {
+			t.Errorf("%s has no args; set --unpinned (or the pinning flag it needs)", v.ID)
+		}
+	}
+}
+
+// A refused vector must fail for its own reason: its phrase must not appear in another refused vector's failure
+// lines. Otherwise a checker that gives vector A's failure for vector B's input would still pass B.
+func TestAPhraseNamesOneRefusalOnly(t *testing.T) {
+	m := load(t)
+	failures := map[string]string{}
+	for _, v := range m.Vectors {
+		if v.Expect.Result == "fail" {
+			failures[v.ID] = strings.Join(run(t, v).Failures, "\n")
+		}
+	}
+	for _, a := range m.Vectors {
+		if a.Expect.Result != "fail" {
+			continue
+		}
+		for id, lines := range failures {
+			if id != a.ID && strings.Contains(lines, a.Expect.FailureContains) {
+				t.Errorf("the phrase of %s (%q) also appears in the failure of %s:\n%s", a.ID, a.Expect.FailureContains, id, lines)
+			}
+		}
 	}
 }
 

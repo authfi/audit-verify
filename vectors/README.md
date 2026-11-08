@@ -10,7 +10,8 @@ language, prove it agrees with this one, and they let an auditor see every refus
 | `id` | stable, `<kind letter><number>`: `T` tape, `H` head, `R` receipt, `C` config, `K` chain, `A` attest, `S` ssh, `L` revoked list |
 | `kind` | `tape`, `head`, `receipt`, `config`, `chain`, `attest`, `ssh`, `revoked-list`; the letter of the id must match |
 | `input` | the files, by role, relative to this directory |
-| `expect` | `pass`, or `fail` with a `reason` code and a phrase (`failure_contains`) the verifier's failure line must contain, so a checker that fails for the wrong reason is red |
+| `expect` | `pass`, or `fail` with a `reason` label and a phrase (`failure_contains`) the verifier's failure line must contain. The phrase is the check: the verifier emits no reason codes yet, so the `reason` is a name for the refusal and a checker compares the phrase. A test fails if one refused vector's phrase also appears in another's failure, so a checker that fails for the wrong reason is red |
+| `args` | how the run is set up. Every vector here carries `--unpinned`: none pins a root, which is the verifier's default today and an explicit flag from the release that pins the embedded root by default, so these vectors keep their result then. A harness refuses an arg it does not know |
 | `why` | one line: what the vector proves, or which refusal it is |
 
 The manifest also carries `format` (the manifest's version), `verifier_min` (the first release that must give every
@@ -23,6 +24,14 @@ renumbered or dropped. `ids.lock` lists every id ever issued; the tests fail if 
 that is not in the lock. A change that adds vectors adds their ids to `ids.lock` in the same commit. A change to a
 bundle shape that old vectors cannot express bumps the manifest `format` and adds vectors; old vectors stay and keep
 passing.
+
+## Where the vectors come from
+
+The generator builds entries, heads and receipts with the verifier's own `EntryHash`, `HeadMessage` and `ReceiptType`.
+The test that regenerates them proves the committed files match the generator; it does not prove they match what
+the real producer (the audit service's `auditProof` and the gateway's receipts) writes. Until a bundle from a real
+`auditProof` and a second implementation (the Node checker) have run against these files, they show what this
+verifier accepts and refuses, not that another implementation agrees.
 
 ## How they are made
 
