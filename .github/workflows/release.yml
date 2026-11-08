@@ -3,11 +3,20 @@
 # and a SLSA build provenance attestation for every file. The `release` environment needs a reviewer's approval
 # before the release job starts. `go install` users need nothing from this workflow: the Go module proxy serves
 # the tag.
+#
+# Every job runs on the self-hosted runner `authfi-ci-go`, as in ci.yml. A GitHub-hosted label (ubuntu-latest) has
+# no runner in this organisation, so a job that asks for one waits until GitHub cancels the run after 24 hours:
+# that is what happened to the v1.2.0 run. internal/repocheck fails the build if a workflow asks for any other label.
+#
+# `workflow_dispatch` is the rehearsal: it builds a snapshot with goreleaser and signs its checksum file keyless
+# on the same runner, without a tag, a Release or the approval gate. It proves the runner reaches Fulcio and Rekor,
+# gets an OIDC token and may use the three release actions, so the first real tag does not find that out.
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,20 +27,17 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: authfi-ci-go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: The tag is a version on main, with a changelog entry
+        if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
-        run: |
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a version tag (vMAJOR.MINOR.PATCH)"; exit 1; }
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
-          v="${TAG#v}"
-          grep -Eq "^## \[?${v//./\\.}\]?( |$)" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $v"; exit 1; }
+        run: scripts/check-release.sh "$TAG" "$GITHUB_SHA"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -39,9 +45,41 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
 
+  rehearsal:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: authfi-ci-go
+    permissions:
+      contents: read
+      id-token: write # keyless signing, as in the real release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --snapshot --clean
+      - name: The snapshot built every archive and its checksum file was signed
+        run: |
+          set -euo pipefail
+          sums="$(ls dist/*_SHA256SUMS)"
+          test -s "${sums}.sigstore.json"
+          (cd dist && sha256sum -c "$(basename "$sums")")
+          n="$(ls dist/*.tar.gz dist/*.zip | wc -l)"
+          test "$n" -eq 6 || { echo "::error::expected 6 archives, found $n"; exit 1; }
+          ls -l dist
+
   release:
     needs: verify
-    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    runs-on: authfi-ci-go
     environment:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}

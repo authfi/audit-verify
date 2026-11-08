@@ -12,6 +12,15 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
   Edits to the stretch are found exactly as for any other head. A verifier older than this version cannot check a
   backfilled head and reports it as not verifying; it is not a sign of tampering.
 
+### Fixed
+
+- The Release workflow runs on the self-hosted runner `authfi-ci-go`, as the CI workflow does. It asked for
+  `ubuntu-latest`, which this organisation has no runner for, so the only release run (v1.2.0) waited 24 hours and
+  was cancelled: no release was ever published. A `workflow_dispatch` rehearsal builds and signs a snapshot on the
+  same runner without a tag, and `scripts/check-release.sh` is the one gate for "the tag is a version on main and
+  the changelog has notes for it". The tags v1.0.0 to v1.2.0 stay as they are and get no release; the first
+  release is v1.3.0.
+
 ### Changed
 
 - `config`: a person's approval of an agent configuration act is now sudo evidence ("Confirm it's you", the
