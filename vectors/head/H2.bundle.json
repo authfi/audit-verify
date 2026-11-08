@@ -1,0 +1,99 @@
+{
+  "format": "authfi.audit.proof.v1",
+  "tenant_id": "00000000-0000-4000-8000-00000000a4e1",
+  "entries": [
+    {
+      "seq": 1,
+      "prev_hash": "",
+      "entry_hash": "478a79c8a52b021957fe28a045e94a15e0b7a66b3008b525a3390f1c67a54189",
+      "id": "vec-1",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:00Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 2,
+      "prev_hash": "478a79c8a52b021957fe28a045e94a15e0b7a66b3008b525a3390f1c67a54189",
+      "entry_hash": "60308144644c239aec1f2669dca843a27cc96d8312354635275b772fe5b1303c",
+      "id": "vec-2",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:01Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 3,
+      "prev_hash": "60308144644c239aec1f2669dca843a27cc96d8312354635275b772fe5b1303c",
+      "entry_hash": "316db8741c121672944ce56546f4a29531b769978e5eaaa145dfdc15c31b35bf",
+      "id": "vec-3",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:02Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 4,
+      "prev_hash": "316db8741c121672944ce56546f4a29531b769978e5eaaa145dfdc15c31b35bf",
+      "entry_hash": "632548966b0f460b34b22122c54887e159686592c223d334b265fdd63511b5e1",
+      "id": "vec-4",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:03Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 5,
+      "prev_hash": "632548966b0f460b34b22122c54887e159686592c223d334b265fdd63511b5e1",
+      "entry_hash": "c2666bd14c09e09341216ddefc9d9d69c60e14612578518ae916d659ff6159bd",
+      "id": "vec-5",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:04Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 6,
+      "prev_hash": "c2666bd14c09e09341216ddefc9d9d69c60e14612578518ae916d659ff6159bd",
+      "entry_hash": "620c069dda35d03dedb026e4627c273f91b1b7c469b0891034f5e98a53eb485c",
+      "id": "vec-6",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:05Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    }
+  ],
+  "heads": [
+    {
+      "seq": 6,
+      "entry_hash": "620c069dda35d03dedb026e4627c273f91b1b7c469b0891034f5e98a53eb485c",
+      "key_id": "vector-receipt-1",
+      "algorithm": "Ed25519",
+      "signature": "agPS1qLDtfAjVZyrHI8YgfmSWED1HlQRTrTgk89AbDXnJiBppGX_NMac6l5TBdqiDI1-PMJG_OdmfeSq4V-mDw"
+    }
+  ],
+  "keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "vector-head-1",
+      "x": "PuBlg1W7FcgmQTyLS7ovH0ALTPfk5cn5VGwT-oKp2pg",
+      "status": "active",
+      "use": "audit_head"
+    },
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "vector-receipt-1",
+      "x": "vP7zreaOLcDuk_LFtdggUTexvpEz7IWAD_em6VDw6-8",
+      "status": "active",
+      "use": "receipt"
+    }
+  ]
+}

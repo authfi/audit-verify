@@ -1,0 +1,121 @@
+{
+  "format": "authfi.audit.proof.v1",
+  "tenant_id": "00000000-0000-4000-8000-00000000a4e1",
+  "entries": [
+    {
+      "seq": 1,
+      "prev_hash": "",
+      "entry_hash": "478a79c8a52b021957fe28a045e94a15e0b7a66b3008b525a3390f1c67a54189",
+      "id": "vec-1",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:00Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 2,
+      "prev_hash": "478a79c8a52b021957fe28a045e94a15e0b7a66b3008b525a3390f1c67a54189",
+      "entry_hash": "60308144644c239aec1f2669dca843a27cc96d8312354635275b772fe5b1303c",
+      "id": "vec-2",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:01Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 3,
+      "prev_hash": "60308144644c239aec1f2669dca843a27cc96d8312354635275b772fe5b1303c",
+      "entry_hash": "9bdd7ce4ef60dc02af8041155d0c9b6ea25ea1840e63ef11da03af40aa5b3086",
+      "id": "vec-3",
+      "actor": "agent:agent-1",
+      "action": "mcp.decision.receipt",
+      "resource": "mcp_tool:send_email",
+      "recorded_at": "2026-11-01T12:00:02Z",
+      "metadata": "{\"receipt\":\"eyJhbGciOiJFZERTQSIsImtpZCI6InZlY3Rvci1yZWNlaXB0LTEiLCJ0eXAiOiJhdXRoZmktcmVjZWlwdCtqd3QifQ.eyJhZ2VudCI6ImFnZW50LTEiLCJpYXQiOjE3OTM1MzQ0MDIsInBoIjoiZGVjaXNpb24iLCJyZXEiOiJyZXEtQSIsInJpZCI6InJjcHQtQSIsInRpZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYTRlMSIsInRvb2wiOiJzZW5kX2VtYWlsIiwidiI6MSwidmVyZGljdCI6ImFsbG93In0.cb_OMQZkNI4kMG83pt-0Fb5kYpPyE9LvdavR3Y8MSdCBgH9Fsrsq43cX_10s1yAD03bfHy7WK-hb_jEi0CAAAA\"}"
+    },
+    {
+      "seq": 4,
+      "prev_hash": "9bdd7ce4ef60dc02af8041155d0c9b6ea25ea1840e63ef11da03af40aa5b3086",
+      "entry_hash": "f6ea7aedc1d1d21c8c2618039d23a6f178141e75c8d32c987d1e0c4e4b4f2a0f",
+      "id": "vec-4",
+      "actor": "agent:agent-1",
+      "action": "mcp.tool.call",
+      "resource": "mcp_tool:send_email",
+      "recorded_at": "2026-11-01T12:00:03Z",
+      "metadata": "{\"decision\":\"allow\",\"outcome\":\"ok\",\"receipt\":\"eyJhbGciOiJFZERTQSIsImtpZCI6InZlY3Rvci1yZWNlaXB0LTEiLCJ0eXAiOiJhdXRoZmktcmVjZWlwdCtqd3QifQ.eyJhZ2VudCI6ImFnZW50LTEiLCJkcmlkIjoicmNwdC1BIiwiaWF0IjoxNzkzNTM0NDAyLCJvdXQiOiJvayIsInBoIjoib3V0Y29tZSIsInJlcSI6InJlcS1BIiwicmlkIjoicmNwdC1BLW91dCIsInRpZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYTRlMSIsInRvb2wiOiJzZW5kX2VtYWlsIiwidiI6MX0.4yqmpZxbFgwBw4XqGY2tdR-58s6NHZu_JyrrUy9jkkFkgdI-x-YgImfvOb-F_a1Oxats0KTtUEzgD9yActgYAQ\",\"receipt_id\":\"rcpt-A\",\"request_id\":\"req-A\"}"
+    },
+    {
+      "seq": 5,
+      "prev_hash": "f6ea7aedc1d1d21c8c2618039d23a6f178141e75c8d32c987d1e0c4e4b4f2a0f",
+      "entry_hash": "237d85b529846411206c5186a25c65d9348891b1bda7925ed12449b35b2199d6",
+      "id": "vec-5",
+      "actor": "agent:agent-1",
+      "action": "mcp.decision.receipt",
+      "resource": "mcp_tool:wire_money",
+      "recorded_at": "2026-11-01T12:00:04Z",
+      "metadata": "{\"receipt\":\"eyJhbGciOiJFZERTQSIsImtpZCI6InZlY3Rvci1yZWNlaXB0LTEiLCJ0eXAiOiJhdXRoZmktcmVjZWlwdCtqd3QifQ.eyJhZ2VudCI6ImFnZW50LTEiLCJpYXQiOjE3OTM1MzQ0MDIsInBoIjoiZGVjaXNpb24iLCJyZXEiOiJyZXEtQiIsInJpZCI6InJjcHQtQiIsInRpZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYTRlMSIsInRvb2wiOiJ3aXJlX21vbmV5IiwidiI6MSwidmVyZGljdCI6ImRlbnkifQ.y2hHldEMIYMBCxUUEPcVhjjOAZEEU-uhvpkg1kRpduFBEpaeY-rtQrLYtdFO1BKpiHHa80IzsUExcURo9jk6Cg\"}"
+    },
+    {
+      "seq": 6,
+      "prev_hash": "237d85b529846411206c5186a25c65d9348891b1bda7925ed12449b35b2199d6",
+      "entry_hash": "28c67a2489f60f90171e382c4c39dceb2651dcdbaad271d217caca2ec5770e4d",
+      "id": "vec-6",
+      "actor": "agent:agent-1",
+      "action": "mcp.tool.call",
+      "resource": "mcp_tool:wire_money",
+      "recorded_at": "2026-11-01T12:00:05Z",
+      "metadata": "{\"decision\":\"deny\",\"receipt_id\":\"rcpt-B\",\"request_id\":\"req-B\"}"
+    },
+    {
+      "seq": 7,
+      "prev_hash": "28c67a2489f60f90171e382c4c39dceb2651dcdbaad271d217caca2ec5770e4d",
+      "entry_hash": "64330a7aa95813c1cd43bb19cf124be2835af61d8666b01f7a32c31744de5036",
+      "id": "vec-7",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:06Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    },
+    {
+      "seq": 8,
+      "prev_hash": "64330a7aa95813c1cd43bb19cf124be2835af61d8666b01f7a32c31744de5036",
+      "entry_hash": "b2b27b0c62d49ee63f59ec1b27fd2a796d90209b6f25d70b479c32b5c10a8168",
+      "id": "vec-8",
+      "actor": "user:alice",
+      "action": "user.login",
+      "resource": "user:alice",
+      "recorded_at": "2026-11-01T12:00:07Z",
+      "metadata": "{\"ip\":\"192.0.2.1\"}"
+    }
+  ],
+  "heads": [
+    {
+      "seq": 8,
+      "entry_hash": "b2b27b0c62d49ee63f59ec1b27fd2a796d90209b6f25d70b479c32b5c10a8168",
+      "key_id": "vector-head-1",
+      "algorithm": "Ed25519",
+      "signature": "0lyz-9hQA8nmrk2KorALVqZ5V679JrHEwbzVGE1VrU7Z1arv0LoJh18sV3n3oOhIEgP3SlWv7IGQ9J94yCgiAw"
+    }
+  ],
+  "keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "vector-head-1",
+      "x": "PuBlg1W7FcgmQTyLS7ovH0ALTPfk5cn5VGwT-oKp2pg",
+      "status": "active",
+      "use": "audit_head"
+    },
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "vector-receipt-1",
+      "x": "vP7zreaOLcDuk_LFtdggUTexvpEz7IWAD_em6VDw6-8",
+      "status": "active",
+      "use": "receipt"
+    }
+  ]
+}
