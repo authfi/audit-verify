@@ -1,0 +1,99 @@
+{
+  "format": 1,
+  "verifier_min": "1.3.0",
+  "at": "2026-11-01T12:30:00Z",
+  "vectors": [
+    {
+      "id": "T1",
+      "kind": "tape",
+      "input": {
+        "bundle": "tape/T1.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "pass"
+      },
+      "why": "a window from the start of the tape, linked and covered by a head signed by an audit_head key"
+    },
+    {
+      "id": "T2",
+      "kind": "tape",
+      "input": {
+        "bundle": "tape/T2.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "fail",
+        "reason": "entry_changed",
+        "failure_contains": "the entry was changed"
+      },
+      "why": "one field of one entry is changed after the chain was made"
+    },
+    {
+      "id": "H1",
+      "kind": "head",
+      "input": {
+        "bundle": "head/H1.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "fail",
+        "reason": "head_signature",
+        "failure_contains": "the signature does not verify under key"
+      },
+      "why": "the head names the tenant's audit_head key but was signed by another key"
+    },
+    {
+      "id": "H2",
+      "kind": "head",
+      "input": {
+        "bundle": "head/H2.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "fail",
+        "reason": "head_wrong_use",
+        "failure_contains": "may not sign a head"
+      },
+      "why": "the gateway's receipt key signs a head: a key signs only the statements of its own use"
+    },
+    {
+      "id": "R1",
+      "kind": "receipt",
+      "input": {
+        "bundle": "receipt/R1.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "pass"
+      },
+      "why": "an allowed call with its decision and outcome receipts and a denied call with its decision receipt"
+    },
+    {
+      "id": "R2",
+      "kind": "receipt",
+      "input": {
+        "bundle": "receipt/R2.bundle.json"
+      },
+      "args": [
+        "--unpinned"
+      ],
+      "expect": {
+        "result": "fail",
+        "reason": "receipt_signature",
+        "failure_contains": "its signature does not verify under key"
+      },
+      "why": "the last bytes of a decision receipt's signature are changed and the chain and head are rebuilt over the damaged entry"
+    }
+  ]
+}

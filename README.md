@@ -53,7 +53,7 @@ entries outside the bundle.
 
 ## The format
 
-The format is simple enough to check in any language.
+The tape, head and receipt formats use only Ed25519, SHA-256 and JSON. `vectors/` holds fixed inputs with the result each must give, for testing a second implementation; none has been run against them yet, so this repository does not claim another language agrees.
 
 ```text
 entry_hash  = hex(sha256(prev_hash US id US actor US action US resource US recorded_at US metadata))
