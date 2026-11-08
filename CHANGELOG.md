@@ -6,6 +6,12 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
 
 ### Added
 
+- Test vectors (`vectors/`). Fixed inputs with the result a correct checker must give, listed in `manifest.json`.
+  Each has a stable id, `<kind letter><number>` (`T` tape, `H` head, `R` receipt, `C` config, `K` chain, `A` attest,
+  `S` ssh, `L` revoked list), cited elsewhere as `<item>:<id>` such as `A4:R1`; an id is never reused, renumbered or
+  dropped (`ids.lock`). A refused vector states a reason label and the phrase the failure must contain; no two refused vectors share a phrase, and every vector says it runs `--unpinned`. The first six
+  (T1, T2, H1, H2, R1, R2) are made by `go run ./tools/mkvectors` from fixed seeds and a test fails if the committed
+  files differ from a fresh run.
 - Backfilled heads. A head signed after the fact, over a stretch the tape had no signed head for, is marked
   `backfilled` and signed under its own prefix (`authfi.audit.chain-head.backfill.v1`), so the mark cannot be added
   or cleared without breaking the signature. The report counts them (`Backfilled`) and says what they vouch for.
