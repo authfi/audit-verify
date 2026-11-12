@@ -2,7 +2,10 @@
 
 All notable changes to this verifier. It follows [Semantic Versioning](https://semver.org).
 
-## Unreleased
+## 1.3.1
+
+The first published release. v1.3.0 holds the same code but was tagged before this file had a section for it, so
+its release check stopped and no binaries were published for it; 1.3.1 adds only these notes.
 
 ### Added
 
@@ -24,7 +27,7 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
   the only release run (v1.2.0) waited 24 hours and was cancelled: no release was ever published. A
   `workflow_dispatch` rehearsal builds and signs a snapshot on that runner without a tag, and
   `scripts/check-release.sh` is the one gate for "the tag is a version on main and the changelog has notes for it".
-  The tags v1.0.0 to v1.2.0 stay as they are and get no release; the first release is v1.3.0.
+  The tags v1.0.0 to v1.3.0 stay as they are and get no release; the first release is v1.3.1.
 
 ### Changed
 
@@ -33,7 +36,7 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
   than an hour after its entry (`ReceiptSkew`, unchanged) is still refused, as is one dated years away. Before this,
   both directions were limited to an hour, so a tape whose receipt was recorded 62 minutes after it was issued
   could not be verified past that position. This is the first version that accepts such a tape; v1.3.0 is the
-  minimum, and an older verifier reports it as "receipt dated far from its tape position".
+  minimum module version (1.3.1 the first release with binaries), and an older verifier reports it as "receipt dated far from its tape position".
 - `config`: a person's approval of an agent configuration act is now sudo evidence ("Confirm it's you", the
   project's sudo window) and no longer a passkey assertion over the act's digest. The `passkey` approval kind is
   removed, with its WebAuthn, relying-party, origin, authenticator-data and signature checks; a `passkey` approval
