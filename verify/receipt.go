@@ -38,10 +38,15 @@ const (
 	toolResourcePrefix  = "mcp_tool:"
 	modelResourcePrefix = "model:"
 
-	// ReceiptSkew is how far a receipt's issue time may be from the recorded time of the entry that carries it.
-	// Receipts are recorded within moments of being signed, so a receipt dated years away was not signed for this
-	// position.
+	// ReceiptSkew is how far after the recorded time of the entry that carries it a receipt's issue time may be.
+	// A receipt cannot honestly be signed after its entry was recorded, so this only allows for the difference
+	// between the clocks of the signer and the recorder.
 	ReceiptSkew = time.Hour
+	// ReceiptMaxLag is how far before the recorded time of the entry that carries it a receipt's issue time may
+	// be. A receipt is signed first and recorded later, and an outage on the way to the tape can delay the record
+	// by hours. A receipt dated years away, or ahead of its entry by more than ReceiptSkew, was not signed for
+	// this position.
+	ReceiptMaxLag = 24 * time.Hour
 	// DecisionSettle is how long an allowed decision may go with no call record before it is counted: the call
 	// may still be running, and its record is written when it ends.
 	DecisionSettle = 10 * time.Minute
@@ -269,7 +274,7 @@ func checkReceipts(b Bundle, r *Report, fail func(string, ...any), used usedKeys
 			fail("position %d: the entry's recorded time %q is not a time, so the receipt cannot be placed", e.Seq, e.RecordedAt)
 			continue
 		}
-		if skew := time.Unix(c.IAT, 0).Sub(at); skew > ReceiptSkew || skew < -ReceiptSkew {
+		if skew := time.Unix(c.IAT, 0).Sub(at); skew > ReceiptSkew || skew < -ReceiptMaxLag {
 			fail("position %d: receipt dated far from its tape position: issued %s, recorded %s", e.Seq, time.Unix(c.IAT, 0).UTC().Format(time.RFC3339), e.RecordedAt)
 			continue
 		}
