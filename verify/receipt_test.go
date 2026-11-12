@@ -579,10 +579,16 @@ func TestAReceiptDatedFarFromItsTapePositionFails(t *testing.T) {
 		skew time.Duration
 		ok   bool
 	}{
-		{"just inside, before", -ReceiptSkew + time.Second, true},
-		{"just inside, after", ReceiptSkew - time.Second, true},
-		{"just outside, before", -ReceiptSkew - time.Second, false},
-		{"just outside, after", ReceiptSkew + time.Second, false},
+		// skew is the receipt's issue time minus the entry's recorded time: negative when the receipt is older.
+		{"just inside, older", -ReceiptMaxLag + time.Second, true},
+		{"just inside, newer", ReceiptSkew - time.Second, true},
+		{"just outside, older", -ReceiptMaxLag - time.Second, false},
+		{"just outside, newer", ReceiptSkew + time.Second, false},
+		{"older by 23h59m", -(23*time.Hour + 59*time.Minute), true},
+		{"older by 24h01m", -(24*time.Hour + time.Minute), false},
+		{"older by 62m, past the newer bound", -62 * time.Minute, true},
+		{"newer by 59m", 59 * time.Minute, true},
+		{"newer by 61m", 61 * time.Minute, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := defaultWorld(t)
@@ -741,7 +747,8 @@ func TestBothSpellingsOfAToolCallShareOneBeginning(t *testing.T) {
 
 }
 
-// The bound itself is inside it: a receipt exactly an hour from its entry is accepted, a nanosecond more is not.
+// Each bound is inside it: a receipt exactly 24 hours older than its entry, or exactly an hour newer, is accepted,
+// and a nanosecond more is not.
 func TestTheSkewBoundIsInclusive(t *testing.T) {
 	const frac = 123456000 * time.Nanosecond // the world records entries at this fraction of the issue second
 	for _, tc := range []struct {
@@ -749,10 +756,10 @@ func TestTheSkewBoundIsInclusive(t *testing.T) {
 		offset time.Duration
 		ok     bool
 	}{
-		{"exactly an hour after", -ReceiptSkew - frac, true},
-		{"a nanosecond past an hour after", -ReceiptSkew - frac - time.Nanosecond, false},
-		{"exactly an hour before", ReceiptSkew - frac, true},
-		{"a nanosecond past an hour before", ReceiptSkew - frac + time.Nanosecond, false},
+		{"exactly an hour newer", -ReceiptSkew - frac, true},
+		{"a nanosecond past an hour newer", -ReceiptSkew - frac - time.Nanosecond, false},
+		{"exactly 24 hours older", ReceiptMaxLag - frac, true},
+		{"a nanosecond past 24 hours older", ReceiptMaxLag - frac + time.Nanosecond, false},
 	} {
 		w := defaultWorld(t)
 		w.offset[w.dA] = tc.offset
