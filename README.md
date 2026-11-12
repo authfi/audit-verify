@@ -105,6 +105,8 @@ The checks, with the keys the bundle lists:
    (a receipt is signed first, and an outage on the way to the tape can delay its record), and at most an hour
    after it (an allowance for clock difference only). Verifier v1.3.0 is the first to accept a receipt recorded
    more than an hour after it was issued; older versions refuse it with "receipt dated far from its tape position".
+   The 24 hour allowance is a trade: a record written up to 24 hours after its receipt was signed now verifies, so
+   this check no longer shows that an entry was recorded within an hour of the call.
 5. **Uniqueness and place.** A receipt id is never two different receipts, and receipts appear only on
    `mcp.decision.receipt`, `mcp.tool.call` and `mcp.model.call` entries.
 

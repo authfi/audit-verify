@@ -20,12 +20,11 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
 
 ### Fixed
 
-- The Release workflow runs on the self-hosted runner `authfi-ci-go`, as the CI workflow does. It asked for
-  `ubuntu-latest`, which this organisation has no runner for, so the only release run (v1.2.0) waited 24 hours and
-  was cancelled: no release was ever published. A `workflow_dispatch` rehearsal builds and signs a snapshot on the
-  same runner without a tag, and `scripts/check-release.sh` is the one gate for "the tag is a version on main and
-  the changelog has notes for it". The tags v1.0.0 to v1.2.0 stay as they are and get no release; the first
-  release is v1.3.0.
+- The Release workflow now runs on the same runner as the CI workflow. It asked for a runner that does not exist, so
+  the only release run (v1.2.0) waited 24 hours and was cancelled: no release was ever published. A
+  `workflow_dispatch` rehearsal builds and signs a snapshot on that runner without a tag, and
+  `scripts/check-release.sh` is the one gate for "the tag is a version on main and the changelog has notes for it".
+  The tags v1.0.0 to v1.2.0 stay as they are and get no release; the first release is v1.3.0.
 
 ### Changed
 
@@ -40,6 +39,8 @@ All notable changes to this verifier. It follows [Semantic Versioning](https://s
   removed, with its WebAuthn, relying-party, origin, authenticator-data and signature checks; a `passkey` approval
   now fails with a clear reason. Two approvers are compared by name without regard to letter case, and by
   credential only where both carry one.
+- The `passkey` kind existed only between two unreleased commits and in no tagged version, so removing it breaks
+  no published verifier.
 - What is no longer proven offline: that a person's hardware key signed the act's digest.
 - What remains: the KMS agent-config key's countersign, chained to the pinned root; the digest recomputed from the
   act and matched to each approval; who confirmed, with which methods, when, and within which sudo window. CI
