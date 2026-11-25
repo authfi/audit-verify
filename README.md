@@ -185,6 +185,53 @@ approvals the rules need. It does not say a person's hardware key signed an act:
 that the person was inside their sudo window, and by which methods. Passing the tape says the bundle's newest version for each agent is the newest the tape
 records.
 
+## Access transparency
+
+When access transparency is on for a project, every privileged act on it goes on its region's access transparency
+log: an AuthFI staff member's support
+session and everything done in it, a role or grant change, a break-glass owner, a stop pulled or lifted, a key made,
+rotated or removed, a policy promoted to enforce, a person's approval, and an agent's act at or above the project's
+impact class. The log is one append-only Merkle tree per region, in the form of RFC 9162, so the record of what was
+done to your project can't be edited or removed later without the change showing.
+
+Open **Logs**, then **Access transparency**, and choose **Download proof**. Then run:
+
+```sh
+authfi-audit-verify access --bundle access.json --root roots/authfi-root-ca-r1.pem
+```
+
+Keep the tree heads you download, one JSON object per line, and give them back on later checks. Every saved
+head must be an earlier state of the same tree as the new one, so a log that showed you one history and someone else
+another is caught:
+
+```sh
+authfi-audit-verify access --bundle access.json --heads saved-tree-heads.ndjson
+```
+
+| Check | What it catches |
+|---|---|
+| Each entry matches its leaf hash | An entry was changed |
+| Your entries are numbered and linked one after another | One of your entries was hidden |
+| Each entry's inclusion proof leads to the signed head's root | An entry the log does not hold, or holds somewhere else |
+| The head verifies under an `access_transparency` key | A head was forged, or signed by a key that signs something else |
+| `--root`: the key's certificate chains to the root | Someone else's key signed the head |
+| `--heads`: each saved head is consistent with the new one | The log was rewritten, rolled back or forked, even by the key's holder |
+
+The tree's leaves are salted, so a proof shows you hashes of other projects' acts and nothing about them.
+
+```text
+leaf      = "authfi.access-transparency.leaf.v1" then each field as a 4-byte big-endian length and its bytes:
+            salt, log_id, tenant_id, tenant_seq, prev_leaf_hash, recorded_at, class, action, actor, resource,
+            justification, tape_seq, tape_entry_hash
+leaf_hash = hex(sha256(0x00 || leaf))
+node      = sha256(0x01 || left || right)
+tree head = "authfi.access-transparency.tree-head.v1" LF log_id LF tree_size LF root_hash LF timestamp, with Ed25519
+```
+
+`tenant_seq` and `tape_seq` are decimal, and `tape_seq` is empty when the act has no tape entry. `prev_leaf_hash` is
+the leaf hash of your entry before, empty for your first. `timestamp` is RFC 3339 in UTC, to the second. A bundle's
+`format` field is `authfi.access-transparency.proof.v1`.
+
 ## Verify a release download
 
 Each GitHub Release lists SHA-256 checksums for its archives and signs that file with a keyless cosign signature
@@ -212,6 +259,7 @@ D9:C2:A9:C7:0A:A8:53:AC:01:D3:B2:E3:D4:50:51:28:AB:28:E2:78:18:27:79:5D:25:C9:0A
 ```go
 report := verify.Verify(bundle, verify.Options{Root: pool, Saved: heads})
 config := verify.VerifyConfig(configBundle, verify.ConfigOptions{Root: pool, Tape: &bundle})
+access := verify.VerifyAccessLog(accessBundle, verify.AccessOptions{Root: pool, Saved: treeHeads})
 ```
 
 Import `github.com/authfi/audit-verify/verify`. See the package documentation for the bundle's fields.
