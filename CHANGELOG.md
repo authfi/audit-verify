@@ -2,6 +2,17 @@
 
 All notable changes to this verifier. It follows [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+### Added
+
+- Access transparency. `authfi-audit-verify access` and `verify.VerifyAccessLog` check a project's entries in its
+  region's access transparency log, an RFC 9162 Merkle tree of every privileged act. Each entry's leaf hash, the
+  project's numbered chain of entries, each inclusion proof against the signed tree head, the head's
+  `access_transparency` key and its certificate, and every tree head saved earlier through a consistency proof.
+  `verify.VerifyInclusion` and `verify.VerifyConsistency` are RFC 9162's algorithms (sections 2.1.3.2 and 2.1.4.2),
+  tested against the RFC's definitions for every tree of up to 70 leaves.
+
 ## 1.3.1
 
 The first published release. v1.3.0 holds the same code but was tagged before this file had a section for it, so
