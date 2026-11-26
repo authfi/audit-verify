@@ -106,8 +106,10 @@ type AccessReport struct {
 	Certified bool
 	// SavedChecked is how many saved heads were proven consistent with the bundle's head.
 	SavedChecked int
-	Failures     []string
-	Notes        []string
+	// TenantID and LogID are the bundle's own claims, shown so the person sees what was checked.
+	TenantID, LogID string
+	Failures        []string
+	Notes           []string
 }
 
 // AccessLeaf is the exact bytes hashed for entry e of the tenant in log logID.
@@ -218,7 +220,7 @@ func CheckTreeHead(h TreeHead, keys []Key) (Key, []byte, time.Time, error) {
 // VerifyAccessLog checks b: every entry's leaf, the tenant's chain of entries, each entry's inclusion under the
 // signed head, the head's key, and that every head the person saved is the same log as the bundle's head.
 func VerifyAccessLog(b AccessBundle, o AccessOptions) AccessReport {
-	r := AccessReport{Entries: len(b.Entries), TreeSize: b.Head.TreeSize}
+	r := AccessReport{Entries: len(b.Entries), TreeSize: b.Head.TreeSize, TenantID: b.TenantID, LogID: b.LogID}
 	fail := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
 	for _, n := range b.Notes {
 		r.Notes = append(r.Notes, "the maker of this bundle says: "+n)
@@ -242,7 +244,7 @@ func VerifyAccessLog(b AccessBundle, o AccessOptions) AccessReport {
 	checkAccessEntries(b, root, headOK, &r, fail)
 	if headOK {
 		checkHeadKey(headKey, headAt, o.Root, &r, fail)
-		checkSavedHeads(b, root, o.Saved, &r, fail)
+		checkSavedHeads(b, root, headAt, o.Saved, &r, fail)
 	}
 	r.OK = len(r.Failures) == 0
 	return r
@@ -316,7 +318,7 @@ func checkHeadKey(k Key, at time.Time, root *x509.CertPool, r *AccessReport, fai
 
 // checkSavedHeads proves every head the person saved is an earlier state of the bundle's log, and checks every
 // consistency proof the bundle carries.
-func checkSavedHeads(b AccessBundle, root []byte, saved []TreeHead, r *AccessReport, fail func(string, ...any)) {
+func checkSavedHeads(b AccessBundle, root []byte, headAt time.Time, saved []TreeHead, r *AccessReport, fail func(string, ...any)) {
 	proofs := make(map[int64]Consistency, len(b.Consistency))
 	for _, c := range b.Consistency {
 		if err := checkConsistency(c, b.Head.TreeSize, root); err != nil {
@@ -325,7 +327,6 @@ func checkSavedHeads(b AccessBundle, root []byte, saved []TreeHead, r *AccessRep
 		}
 		proofs[c.FromSize] = c
 	}
-	made, madeErr := time.Parse(time.RFC3339, b.GeneratedAt)
 	for _, s := range saved {
 		if s.LogID != b.LogID {
 			r.Notes = append(r.Notes, fmt.Sprintf("the head you saved of size %d is of log %q, not this bundle's", s.TreeSize, s.LogID))
@@ -343,8 +344,9 @@ func checkSavedHeads(b AccessBundle, root []byte, saved []TreeHead, r *AccessRep
 				continue
 			}
 		case s.TreeSize > b.Head.TreeSize:
-			if madeErr == nil && !savedAt.After(made) {
-				fail("you hold a head of size %d signed before this bundle was made, and the bundle's head is smaller: the log was rolled back", s.TreeSize)
+			// Judged on the signed head time: the bundle's generated_at is unsigned and can be stripped or backdated.
+			if !savedAt.After(headAt) {
+				fail("you hold a head of size %d signed no later than this bundle's head, and the bundle's head is smaller: the log was rolled back", s.TreeSize)
 			} else {
 				r.Notes = append(r.Notes, fmt.Sprintf("the head you saved of size %d is newer than this bundle: download a newer bundle to check it", s.TreeSize))
 			}
@@ -352,7 +354,7 @@ func checkSavedHeads(b AccessBundle, root []byte, saved []TreeHead, r *AccessRep
 		default:
 			c, ok := proofs[s.TreeSize]
 			if !ok {
-				r.Notes = append(r.Notes, fmt.Sprintf("the bundle carries no consistency proof from size %d: download it again asking for that size", s.TreeSize))
+				fail("the bundle carries no consistency proof from the size %d head you saved: download it again asking for that size", s.TreeSize)
 				continue
 			}
 			if c.FromRoot != hex.EncodeToString(savedRoot) {

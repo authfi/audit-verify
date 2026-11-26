@@ -29,6 +29,8 @@ func runAccessCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "could not check the bundle:", err)
 		return 2
 	}
+	fmt.Fprintf(stdout, "tenant:          %s\n", report.TenantID)
+	fmt.Fprintf(stdout, "log:             %s\n", report.LogID)
 	fmt.Fprintf(stdout, "entries checked: %d (tenant positions %d to %d)\n", report.Entries, report.FromSeq, report.ToSeq)
 	fmt.Fprintf(stdout, "in the log:      %d of them, under a signed head of %d entries\n", report.Included, report.TreeSize)
 	fmt.Fprintf(stdout, "saved heads:     %d proven the same log\n", report.SavedChecked)

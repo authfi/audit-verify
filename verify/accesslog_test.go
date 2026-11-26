@@ -286,12 +286,31 @@ func TestARolledBackLogIsCaughtByANewerSavedHead(t *testing.T) {
 	}
 }
 
-func TestASavedHeadWithNoProofIsANote(t *testing.T) {
+func TestASavedHeadWithNoProofFails(t *testing.T) {
 	w := newLogWorld(t, 30)
 	saved := w.bundleAt(11, time.Now().Add(-time.Hour)).Head
 	r := VerifyAccessLog(w.bundle(), AccessOptions{Saved: []TreeHead{saved}})
-	if !r.OK || r.SavedChecked != 0 || !strings.Contains(strings.Join(r.Notes, "|"), "no consistency proof from size 11") {
+	wantAccessFailure(t, r, "no consistency proof from the size 11 head")
+	if r.SavedChecked != 0 {
 		t.Fatalf("report = %+v", r)
+	}
+}
+
+// generated_at is not signed, so stripping or backdating it must not turn a rollback into a note.
+func TestARollbackIsJudgedOnTheSignedHeadTimeNotGeneratedAt(t *testing.T) {
+	w := newLogWorld(t, 30)
+	newer := w.bundleAt(30, time.Now().Add(-time.Hour)).Head
+	for name, generatedAt := range map[string]string{
+		"stripped":  "",
+		"backdated": time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339),
+	} {
+		b := w.bundleAt(20, time.Now())
+		b.GeneratedAt = generatedAt
+		r := VerifyAccessLog(b, AccessOptions{Saved: []TreeHead{newer}})
+		if r.OK {
+			t.Fatalf("%s generated_at: passed, want rolled back", name)
+		}
+		wantAccessFailure(t, r, "rolled back")
 	}
 }
 
